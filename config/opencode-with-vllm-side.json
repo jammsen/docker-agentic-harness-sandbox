@@ -19,6 +19,22 @@
           }
         }
       }
+    },
+    "vllm-side": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "vLLM (Qwen3-14B local)",
+      "options": {
+        "baseURL": "http://10.0.0.13:8001/v1"
+      },
+      "models": {
+        "qwen3-14b": {
+          "name": "Qwen3 14B AWQ",
+          "limit": {
+            "context": 16384,
+            "output": 4096
+          }
+        }
+      }
     }
   },
   "model": "vllm/qwen3.6-35b",
