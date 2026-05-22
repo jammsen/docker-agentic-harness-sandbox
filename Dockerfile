@@ -1,4 +1,4 @@
-FROM ubuntu:26.04
+FROM ubuntu:26.04@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e5718d46ff64
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -34,9 +34,10 @@ WORKDIR /home/opencode
 # Make cargo/rustup available for subsequent RUN steps
 # ENV PATH="/home/opencode/.cargo/bin:/home/opencode/.opencode/bin:$PATH"
 
-ENV HOME=/home/opencode
-
 RUN curl -fsSL https://opencode.ai/install | bash
+
+ENV PATH="/home/opencode/.opencode/bin:$PATH"
+ENV HOME=/home/opencode
 
 # # optional install python in a specific version
 # RUN uv python install ${PYTHON_VERSION}
