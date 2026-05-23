@@ -6,6 +6,22 @@ Run OpenCode as a sandboxed, hardenend non-root Docker container connected to a 
 
 ---
 
+- [A hardend Docker sandbox setup for opencode](#a-hardend-docker-sandbox-setup-for-opencode)
+  - [Prerequisites](#prerequisites)
+  - [Directory Structure](#directory-structure)
+  - [Get, Build \& Run](#get-build--run)
+  - [Verify Everything Works](#verify-everything-works)
+  - [Usage Tips](#usage-tips)
+    - [Working with files](#working-with-files)
+    - [Modes](#modes)
+    - [Context window awareness](#context-window-awareness)
+  - [Troubleshooting](#troubleshooting)
+  - [Security Notes](#security-notes)
+  - [Feature Toggles](#feature-toggles)
+  - [Using Tools and Skills](#using-tools-and-skills)
+    - [Skills](#skills)
+
+
 ## Prerequisites
 
 - Docker + Docker Compose installed on your machine
@@ -180,4 +196,6 @@ Skills a special capabilities for an Agent that tells him how to do things or ho
 They have a specific Format and a SKILL.md file is mandatory.
 Read more about Skills here https://agentskills.io/home
 
+You have 2 options to use them
 - just copy over the `.opencode` folder into your workspace. Opencode will then recognize them
+- just add them to the worklog example skill in the `compose.yml`
