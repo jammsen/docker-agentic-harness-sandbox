@@ -1,6 +1,8 @@
-# OpenCode + vLLM (Gemma 4 26B MoE) — Docker Sandbox Setup
+# A hardend Docker sandbox setup for opencode
 
-Run OpenCode as a sandboxed, non-root Docker container connected to a self-hosted vLLM inference server. No cloud API keys required.
+With OpenCode + vLLM (Gemma 4 26B MoE) configs
+
+Run OpenCode as a sandboxed, hardenend non-root Docker container connected to a self-hosted vLLM inference server. No cloud API keys required.
 
 ---
 
