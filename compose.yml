@@ -19,6 +19,10 @@ services:
       - ./config/opencode.json:/home/opencode/.config/opencode/opencode.json:ro
       - ./.opencode/skills/write-worklog/SKILL.md:/home/opencode/.config/opencode/skills/write-worklog/SKILL.md:ro
       - ./config/auth.json:/home/opencode/.local/share/opencode/auth.json:ro
+      # OMP Config files (read-only mounts)
+      - ./config/omp-config.yml:/home/opencode/.omp/agent/config.yml:ro
+      - ./config/omp-models.yml:/home/opencode/.omp/agent/models.yml:ro
+      - ./config/omp-AGENTS.md:/home/opencode/.omp/agent/AGENTS.md:ro
       # Your project workspace (read-write so opencode can edit files)
       - ./workspace:/home/opencode/workspace:rw
       - ./data:/home/opencode/.local/share/opencode

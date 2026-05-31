@@ -54,8 +54,6 @@ fi
 # HOME → workspace so opencode session state lands on the mounted volume
 # CARGO_HOME/RUSTUP_HOME are pinned in the image ENV, so tools still find their data
 OPENCODE_WORKSPACE="/home/opencode/workspace"
-echo "> Set HOME to $OPENCODE_WORKSPACE (mounted workspace volume)"
-export HOME="$OPENCODE_WORKSPACE"
 
 TOOL="opencode"
 
@@ -71,6 +69,13 @@ if [[ "$ENABLE_OMP" = "true" ]] && gosu "$APP_USER":"$APP_GROUP" bash -c 'comman
         *) TOOL="opencode" ;;
     esac
     echo ""
+fi
+
+# HOME → workspace so opencode session state lands on the mounted volume.
+# omp keeps the real HOME (/home/opencode) so it finds its config/logs there.
+if [[ "$TOOL" = "opencode" ]]; then
+    echo "> Set HOME to $OPENCODE_WORKSPACE (mounted workspace volume)"
+    export HOME="$OPENCODE_WORKSPACE"
 fi
 
 exec gosu "$APP_USER":"$APP_GROUP" "$TOOL"

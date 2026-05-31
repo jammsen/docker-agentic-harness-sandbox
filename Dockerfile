@@ -49,6 +49,8 @@ RUN usermod -l opencode ubuntu && \
 
 RUN mkdir -p /home/opencode/.config/opencode \
     /home/opencode/.local/share/opencode \
+    /home/opencode/.omp/agent \
+    /home/opencode/.omp/logs \
     /home/opencode/workspace && \
     chown -R opencode:opencode /home/opencode
 
