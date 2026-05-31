@@ -1,5 +1,6 @@
 FROM ubuntu:26.04@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e5718d46ff64
 
+ARG ENABLE_OMP=true
 ARG ENABLE_NODEJS=true
 ARG ENABLE_PYTHON=false
 ARG ENABLE_RUST=false
@@ -10,6 +11,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PUID=1000 \
     PGID=1000 \
     # Bake ARG values into the image so they're available at runtime too
+    ENABLE_OMP=${ENABLE_OMP} \
     ENABLE_NODEJS=${ENABLE_NODEJS} \
     ENABLE_PYTHON=${ENABLE_PYTHON} \
     ENABLE_RUST=${ENABLE_RUST} \
@@ -63,6 +65,11 @@ RUN if [ "$ENABLE_PYTHON" = "true" ]; then \
 # Optional: Rust — --no-modify-path because PATH is managed via ENV above
 RUN if [ "$ENABLE_RUST" = "true" ]; then \
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path; \
+    fi
+
+# Optional: omp
+RUN if [ "$ENABLE_OMP" = "true" ]; then \
+    curl -fsSL https://omp.sh/install | sh; \
     fi
 
 # Always: opencode itself

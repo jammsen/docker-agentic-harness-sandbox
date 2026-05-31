@@ -57,4 +57,20 @@ OPENCODE_WORKSPACE="/home/opencode/workspace"
 echo "> Set HOME to $OPENCODE_WORKSPACE (mounted workspace volume)"
 export HOME="$OPENCODE_WORKSPACE"
 
-exec gosu $APP_USER:$APP_GROUP "opencode"
+TOOL="opencode"
+
+if [[ "$ENABLE_OMP" = "true" ]] && gosu "$APP_USER":"$APP_GROUP" bash -c 'command -v omp' &>/dev/null; then
+    echo ""
+    echo "Select which tool to start:"
+    echo "  1. opencode  (default)"
+    echo "  2. omp"
+    echo ""
+    read -r -p "Enter selection [1]: " SELECTION
+    case "$SELECTION" in
+        2) TOOL="omp" ;;
+        *) TOOL="opencode" ;;
+    esac
+    echo ""
+fi
+
+exec gosu "$APP_USER":"$APP_GROUP" "$TOOL"
