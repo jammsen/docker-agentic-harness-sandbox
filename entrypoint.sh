@@ -19,13 +19,9 @@ fi
 
 # Validate PUID/PGID for positive integer values
 if ! [[ "${PUID}" =~ ^[1-9][0-9]*$ ]] || ! [[ "${PGID}" =~ ^[1-9][0-9]*$ ]]; then
-    echo ">>> [Config] PUID=${PUID} PGID=${PGID} — must be positive integers."
-    exit 1
-fi
-
-if [[ "${PUID}" -eq 0 ]] || [[ "${PGID}" -eq 0 ]]; then
-    echo ">>> [Config] PUID=${PUID} PGID=${PGID} — Running the application user as root is not supported."
-    echo "    This container is designed to drop privileges after setup. Please set non-zero values for PUID and PGID."
+    echo ">>> [Config] PUID=${PUID} PGID=${PGID} — Must be positive integers" 
+    echo "    Also running the application user as root is not supported."
+    echo "    This container is designed to drop privileges after setup. Please set positive integer values for PUID and PGID."
     exit 1
 fi
 
