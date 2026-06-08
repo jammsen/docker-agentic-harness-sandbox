@@ -18,14 +18,14 @@ The script preserves:
   - data/.gitkeep
 
 Options:
-  -y, --yes     Run without the interactive confirmation prompt.
+  --destroy     Run without the interactive confirmation prompt.
   -h, --help    Show this help message.
 USAGE
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -y|--yes)
+    --destroy)
       ASSUME_YES=true
       shift
       ;;
@@ -55,7 +55,7 @@ Only these placeholder files will be preserved:
   $ROOT_DIR/workspace/.gitkeep
   $ROOT_DIR/data/.gitkeep
 
-This cannot be undone.
+As this is a destructive operation, this cannot be undone!
 EOF
 
   read -r -p "Type '${CONFIRMATION}' to proceed: " answer

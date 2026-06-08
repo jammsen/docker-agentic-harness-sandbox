@@ -15,10 +15,11 @@ Workflow:
 5. If `CHANGELOG.md` already exists and the change is user-facing, update it before committing. Do not create a new changelog unless the user explicitly asks for one.
 6. Read `WORKLOG.md` if it exists.
 7. Run the smallest useful verification command available in the project. If no verification command exists, say that explicitly.
-8. Append a concise entry to `WORKLOG.md` before committing.
-9. Stage only approved files.
-10. Use a concise Conventional Commit message, for example `feat: add sandbox commands` or `fix: preserve opencode home path`.
-11. After committing, show the commit hash and final `git status --short`.
+8. Stage only approved files.  
+9. Use a concise Conventional Commit message, for example `feat: add sandbox commands` or `fix: preserve opencode home path`.  
+10. Commit the changes.  
+11. Append a concise entry to `WORKLOG.md` including the commit hash/subject.  
++12. Show the commit hash and final `git status --short`.  
 
 Use this exact timestamp command for the worklog:
 

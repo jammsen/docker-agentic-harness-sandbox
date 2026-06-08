@@ -52,6 +52,8 @@ if [[ "$NEEDS_CHOWN" = "true" ]]; then
 fi
 
 OPENCODE_WORKSPACE="/home/opencode/workspace"
+export OPENCODE_WORKSPACE 
+
 echo "> Set HOME to $OPENCODE_WORKSPACE (mounted workspace volume)"
 export HOME="$OPENCODE_WORKSPACE"
 
