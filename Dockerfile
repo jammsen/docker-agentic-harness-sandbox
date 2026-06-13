@@ -16,7 +16,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     ENABLE_PYTHON=${ENABLE_PYTHON} \
     ENABLE_RUST=${ENABLE_RUST} \
     PYTHON_VERSION=${PYTHON_VERSION} \
-    # Pin tool data dirs explicitly — survives the HOME override in entrypoint.sh
+    # Pin tool data dirs explicitly so subprocesses find language toolchains reliably
     CARGO_HOME=/home/opencode/.cargo \
     RUSTUP_HOME=/home/opencode/.rustup \
     # All user tool bins in PATH — inherited by every subprocess after exec gosu
@@ -25,11 +25,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # Install basic tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
     ca-certificates \
+    curl \
     git \
     gosu \
     openssh-client \
+    ripgrep \
+    tzdata \
     && apt-get autoremove -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*

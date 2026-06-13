@@ -19,7 +19,7 @@ fi
 
 # Validate PUID/PGID for positive integer values
 if ! [[ "${PUID:-}" =~ ^[1-9][0-9]*$ ]] || ! [[ "${PGID:-}" =~ ^[1-9][0-9]*$ ]]; then
-    echo ">>> [Config] PUID=${PUID} PGID=${PGID} — Must be positive integers" 
+    echo ">>> [Config] PUID=${PUID:-<unset>} PGID=${PGID:-<unset>} — Must be positive integers"
     echo "    Also running the application user as root is not supported."
     echo "    This container is designed to drop privileges after setup. Please set positive integer values for PUID and PGID."
     exit 1
@@ -56,8 +56,6 @@ if [[ "$NEEDS_CHOWN" = "true" ]]; then
     find "$APP_HOME" -xdev -exec chown "$APP_USER":"$APP_GROUP" {} +
 fi
 
-# HOME → workspace so opencode session state lands on the mounted volume
-# CARGO_HOME/RUSTUP_HOME are pinned in the image ENV, so tools still find their data
 OPENCODE_WORKSPACE="/home/opencode/workspace"
 readonly OPENCODE_WORKSPACE
 export OPENCODE_WORKSPACE
