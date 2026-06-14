@@ -9,6 +9,6 @@ updates:
     directories:
       - "/"
     schedule:
-      interval: "weekly"
+      interval: "daily"
     patterns: ["*"]
     multi-ecosystem-group: "all-dependencies"
