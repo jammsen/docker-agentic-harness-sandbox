@@ -5,7 +5,7 @@ description: Append structured WORKLOG.md entries for task progress, decisions, 
 
 # Write Worklog
 
-Append structured entries to `WORKLOG.md` in the active project directory under `/home/opencode/workspace`. This keeps concrete task context available for later sessions.
+Append structured entries to `WORKLOG.md` in the active project directory under `/home/agent/workspace`. This keeps concrete task context available for later sessions.
 
 ## Core rules
 
@@ -81,4 +81,4 @@ Use this structure:
 
 - Do NOT write vague summaries — include exact details.
 - Do NOT use relative time references without timestamps.
-- Do NOT create or update `/home/opencode/workspace/WORKLOG.md` unless the user explicitly selected the workspace root as the project.
+- Do NOT create or update `/home/agent/workspace/WORKLOG.md` unless the user explicitly selected the workspace root as the project.

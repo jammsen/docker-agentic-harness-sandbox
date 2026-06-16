@@ -1,14 +1,12 @@
-# A hardened Docker sandbox setup for opencode
+# A hardened Docker harness for agentic coding tools
 
-With OpenCode + vLLM (Qwen3.6 35B A3B) configs
-
-Run OpenCode as a sandboxed, hardened non-root Docker container connected to a self-hosted vLLM inference server. No cloud API keys required.
+Run agentic coding tools — OpenCode, OMP, and more — inside a single hardened, non-root Docker container. Connect to a self-hosted vLLM inference server or any OpenAI-compatible API. No cloud API keys required.
 
 ---
 
 ## Table of Contents
 
-- [A hardened Docker sandbox setup for opencode](#a-hardened-docker-sandbox-setup-for-opencode)
+- [A hardened Docker harness for agentic coding tools](#a-hardened-docker-harness-for-agentic-coding-tools)
   - [Table of Contents](#table-of-contents)
   - [Prerequisites](#prerequisites)
   - [Directory Structure](#directory-structure)
@@ -17,11 +15,13 @@ Run OpenCode as a sandboxed, hardened non-root Docker container connected to a s
   - [Usage Tips](#usage-tips)
     - [Working with files](#working-with-files)
     - [Resetting sandbox state](#resetting-sandbox-state)
+    - [Tool selection](#tool-selection)
     - [Modes](#modes)
     - [Context window awareness](#context-window-awareness)
   - [Troubleshooting](#troubleshooting)
   - [Security Notes](#security-notes)
-  - [Feature Toggles](#feature-toggles)
+  - [Included Software](#included-software)
+  - [Build Argument](#build-argument)
   - [Using Tools and Skills](#using-tools-and-skills)
     - [Commands](#commands)
     - [Skills](#skills)
@@ -32,6 +32,8 @@ Run OpenCode as a sandboxed, hardened non-root Docker container connected to a s
 - Docker + Docker Compose installed on your machine
 - Access to a running vLLM server exposing an OpenAI-compatible API (e.g. `http://10.0.0.13:8000`)
 - Your vLLM server must have the model loaded and `/v1/models` responding
+
+> **How this works:** The agent tools running inside the container are clients to your external vLLM server. They have no direct access to the model weights — all inference goes through the API endpoint. If a tool ever needs to identify which model it is using, it must look it up via the API or a web search based on the model ID configured in `config/opencode.json` / `config/omp-models.yml`.
 
 Verify your vLLM is reachable before starting:
 
@@ -50,18 +52,22 @@ The `max_model_len` field in the `/v1/models` response is your context limit. Us
 
 ## Directory Structure
 
-Create the following layout on your machine:
+After cloning, the repository already contains this layout:
 
 ```
-opencode-sandbox/
+docker-agentic-harness-sandbox/
 ├── Dockerfile
 ├── compose.yml
 ├── start.sh
 ├── config/
-│   ├── opencode.json
-│   ├── AGENTS.md       ← global sandbox rules (mounted read-only)
-│   └── auth.json       ← provider auth tokens (mounted read-only)
-├── data/               ← opencode session state, persisted across runs
+│   ├── opencode.json       ← opencode provider and agent config (mounted read-only)
+│   ├── AGENTS.md           ← global sandbox rules for opencode (mounted read-only)
+│   ├── auth.json           ← provider auth tokens (mounted read-only) — edit before use
+│   ├── omp-AGENTS.md       ← sandbox rules for omp (mounted read-only)
+│   ├── omp-config.yml      ← OMP model role assignments (mounted read-only)
+│   └── omp-models.yml      ← OMP provider and model definitions (mounted read-only)
+├── data/               ← tool session state, persisted across runs
+├── scripts/            ← maintenance scripts (e.g. reset-sandbox.sh)
 ├── .opencode/          ← global sandbox commands and skills (mounted read-only)
 └── workspace/          ← put your code projects here
 ```
@@ -72,27 +78,37 @@ opencode-sandbox/
 
 ```bash
 # Get the code
-git clone git@github.com:jammsen/docker-opencode-sandbox.git
+git clone git@github.com:jammsen/docker-agentic-harness-sandbox.git
 
 # Build and launch
 ./start.sh
 
-# Force a full rebuild (no layer cache) — useful when changing Dockerfile or feature toggles
+# Force a full rebuild (no layer cache) — useful when the base image digest has been updated
 ./start.sh --no-cache
 ```
 
-On first launch OpenCode opens the TUI. Press `/` to open the command palette.
+On first launch the container prompts you to select a tool. After selection the chosen tool opens its TUI. For OpenCode, press `/` to open the command palette.
 
 ---
 
 ## Verify Everything Works
 
-Inside the TUI:
+### OpenCode
 
-1. Press `/model` — your model should appear under your provider name with an orange dot
+Inside the OpenCode TUI:
+
+1. Type `/model` — your model should appear under your provider name with an orange dot
 2. Type `hello, what model are you?` — the response should mention your model ID
 3. Check the status bar at the bottom — it should show your configured model, for example `Qwen3.6 35B A3B · vLLM`
 4. Check the right panel — `$0.00 spent` confirms no cloud API is being used
+
+### OMP
+
+Inside the OMP session:
+
+1. Run `omp status` or check the startup output — your provider and model should be listed
+2. Send a message like `hello, what model are you?` — the response should mention your model ID
+3. Confirm the provider is `vllm` and the response is served locally
 
 ---
 
@@ -100,7 +116,7 @@ Inside the TUI:
 
 ### Working with files
 
-Drop files into `./workspace/` on your host. They appear at `/home/opencode/workspace/` inside the container. OpenCode treats this directory as `HOME`; the global config still lives under `/home/opencode/.config/opencode/`.
+Drop files into `./workspace/` on your host. They appear at `/home/agent/workspace/` inside the container. The active tool treats this directory as its working root; tool configs live under `/home/agent/.config/` and `/home/agent/.omp/` respectively.
 
 ```bash
 # Copy a project into the sandbox
@@ -111,7 +127,31 @@ cp -r ~/myproject ./workspace/myproject
 
 Use `scripts/reset-sandbox.sh` only when you intentionally want to remove generated local state from `./workspace/` and `./data/`. It preserves the `.gitkeep` placeholders and requires typing `Yes, do as I say!` before deleting anything.
 
-### Modes
+### Tool selection
+
+At startup the container presents a numbered menu. **Only one tool runs at a time** — select it and the others stay idle until the next container start.
+
+The menu order and default are controlled by the `TOOLS` env var, defaulting to the value baked into the image. Override it in `compose.yml`:
+
+```yaml
+environment:
+  - TOOLS=opencode,omp   # first entry = default
+```
+
+Change the order or remove entries to customise what appears. The entrypoint validates each name against installed binaries and skips any that are missing.
+
+To skip the menu entirely, use the `--tool` flag in `start.sh`:
+
+```bash
+./start.sh --tool omp
+./start.sh --tool opencode
+```
+
+This passes `DEFAULT_TOOL` into the container and goes straight to that tool. Useful for scripting or when you always use the same tool.
+
+### Modes (OpenCode)
+
+OpenCode has two interaction modes:
 
 | Mode  | Shortcut | Token overhead | Best for                               |
 | ----- | -------- | -------------- | -------------------------------------- |
@@ -120,9 +160,11 @@ Use `scripts/reset-sandbox.sh` only when you intentionally want to remove genera
 
 With a 32k context limit, **Ask mode** leaves significantly more room for your actual code and conversation.
 
+OMP does not have a comparable mode concept — it operates as a single interactive session.
+
 ### Context window awareness
 
-The status bar shows `X tokens (Y% used)`. Build mode consumes ~10,000 tokens just for the system prompt before you type anything. For large codebases, open only the files you need or use Ask mode.
+For OpenCode, the status bar shows `X tokens (Y% used)`. Build mode consumes ~10,000 tokens just for the system prompt before you type anything. For large codebases, open only the files you need or use Ask mode.
 
 ---
 
@@ -131,11 +173,11 @@ The status bar shows `X tokens (Y% used)`. Build mode consumes ~10,000 tokens ju
 **Config not loading / provider picker appears on every launch**
 
 ```bash
-docker compose run --rm --entrypoint bash opencode -c \
-  "cat /home/opencode/.config/opencode/opencode.json"
+docker compose run --rm --entrypoint bash sandbox -c \
+  "cat /home/agent/.config/opencode/opencode.json"
 ```
 
-If this returns an error, check that `docker compose` is run from the same directory as `docker-compose.yml` and that `./config/opencode.json` exists.
+If this returns an error, check that `docker compose` is run from the same directory as `compose.yml` and that `./config/opencode.json` exists.
 
 **`GID already exists` error during build**
 
@@ -145,13 +187,13 @@ Ubuntu 26.04 ships with a default user at UID/GID 1000. The Dockerfile handles t
 
 ```bash
 # Test vLLM connectivity from inside the container
-docker compose run --rm --entrypoint bash opencode -c \
+docker compose run --rm --entrypoint bash sandbox -c \
   "curl -s http://YOUR_VLLM_IP:8000/v1/models"
 ```
 
 If this fails, your vLLM IP is unreachable from the container. Use the actual host IP — not `localhost`.
 
-**Tool calling loops or model halts mid-task**
+**[OpenCode] Tool calling loops or model halts mid-task**
 
 Some local models can struggle with long agentic tool-use loops. Mitigations:
 
@@ -167,6 +209,9 @@ The container starts as root to handle setup (creating the user, fixing file own
 
 **Restrictions in place:**
 
+- **Pinned base image digest** — the `FROM` line in the Dockerfile references `ubuntu:26.04` by its exact SHA-256 digest. This ensures every build uses bit-for-bit the same base layer regardless of what the upstream tag points to, preventing supply-chain attacks via tag mutation.
+- **`umask 0027`** — files created by the entrypoint are not world-readable by default. Only the owning user and group can read them; others have no access.
+- **PUID/PGID validation** — the entrypoint rejects non-positive-integer values immediately at startup, preventing misconfigured or injected UID/GID values from silently running the app as root.
 - **`no-new-privileges`** — once the container drops to the unprivileged user, no process inside the container can ever gain more permissions, even if it tries to run a `sudo` binary or a binary with special file capabilities. The kernel enforces this hard, before any code in such a binary even runs.
 - **`cap_drop: ALL`** — Linux capabilities are fine-grained units of root power (e.g. "change file ownership", "bind to privileged ports", "load kernel modules"). By default Docker grants containers a subset of these even without full root. Dropping all of them removes every one of those powers.
 - **`cap_add: CHOWN, SETUID, SETGID, DAC_OVERRIDE`** — only the four capabilities the entrypoint actually needs for its setup phase are added back. Once `gosu` drops to the non-root user, the kernel automatically clears the effective capability set on the UID transition, and `no-new-privileges` blocks any path to reclaiming them.
@@ -176,25 +221,43 @@ The container starts as root to handle setup (creating the user, fixing file own
 
 The model runs entirely on your local vLLM server. No data leaves your network.
 
-## Feature Toggles
+## Included Software
 
-The image supports optional language runtimes controlled via build arguments. All toggles default to `false`.
+All runtimes and tools are installed at **build time** under the `agent` user — the container starts instantly with no downloads at startup.
 
-| ARG | Default | Effect |
-| --- | ------- | ------ |
-| `ENABLE_NODEJS` | `false` | Installs Node.js and npm via apt |
-| `ENABLE_PYTHON` | `false` | Installs `uv` and the configured Python version |
-| `ENABLE_RUST` | `false` | Installs Rust via `rustup` |
-| `PYTHON_VERSION` | `3.13` | Python version passed to `uv python install` |
+| Software | How installed | Purpose |
+| --- | --- | --- |
+| `opencode` | `opencode.ai/install` | Agentic coding tool with TUI |
+| `omp` | `omp.sh/install` | Agentic coding tool (CLI) |
+| Node.js + npm | apt | Available in the workspace for Node.js projects |
+| Python (`uv`) | `astral.sh/uv` | General scripting in the workspace |
+| Rust (`rustup`) | `sh.rustup.rs` | General building in the workspace |
+| `ripgrep` | apt | File search used by agent tools |
+| `tzdata` | apt | Europe/Berlin timestamps |
+| `git` | apt | Version control inside the container |
+| `gosu` | apt | Privilege drop from root to `agent` user |
 
-Enable a toggle at build time Dockerfile rewrite or via command-line args:
+Tool binaries are on `PATH` and their data directories (`CARGO_HOME`, `RUSTUP_HOME`) are pinned via environment variables so they survive the `HOME` redirect used to route session state to the mounted workspace.
 
-```bash
-docker compose build --build-arg ENABLE_PYTHON=true --build-arg PYTHON_VERSION=3.12
-./start.sh --no-cache  # rebuild with new toggles
+## Build Argument
+
+The only build argument is the Python version. Change it in `compose.yml` before building:
+
+```yaml
+# compose.yml
+services:
+  sandbox:
+    build:
+      context: .
+      args:
+        PYTHON_VERSION: "3.12"   # change to any version supported by uv
 ```
 
-All runtimes are installed at **build time** under the `opencode` user, so the container starts instantly with no language runtime downloads at startup. Base tooling includes `ripgrep` for OpenCode search tools and `tzdata` for correct Europe/Berlin timestamps. The tool binaries are on `PATH` and their data directories (`CARGO_HOME`, `RUSTUP_HOME`) are pinned via environment variables so they survive the `HOME` override that redirects opencode's session state to the mounted workspace.
+Then rebuild:
+
+```bash
+./start.sh --no-cache
+```
 
 ---
 
@@ -205,10 +268,12 @@ All runtimes are installed at **build time** under the `opencode` user, so the c
 Sandbox-wide commands and skills are mounted globally:
 
 ```yaml
-- ./config/AGENTS.md:/home/opencode/.config/opencode/AGENTS.md:ro
-- ./.opencode/commands:/home/opencode/.config/opencode/commands:ro
-- ./.opencode/skills:/home/opencode/.config/opencode/skills:ro
+- ./config/AGENTS.md:/home/agent/.config/opencode/AGENTS.md:ro
+- ./.opencode/commands:/home/agent/.config/opencode/commands:ro
+- ./.opencode/skills:/home/agent/.config/opencode/skills:ro
 ```
+
+Note: `./config/AGENTS.md` is intentionally separate from `./config/opencode.json` — the AGENTS.md path is referenced in the opencode system prompt and must be mounted at its exact target location.
 
 This makes the commands available regardless of which project under `./workspace/` you open. Project-specific commands, skills, and `AGENTS.md` files can still live inside the project directory.
 

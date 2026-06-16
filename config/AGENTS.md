@@ -1,10 +1,12 @@
 # OpenCode Sandbox Rules
 
-All projects are located under `/home/opencode/workspace`. Work only inside this directory, with no exceptions, unless the user explicitly asks for access outside the sandbox.
+You are running inside a hardened Docker sandbox. You are a client to a dedicated vLLM server accessible only via its API endpoint — you have no direct access to the model weights. If you need information about yourself (capabilities, training cutoff, context size, etc.), look it up online based on your model ID.
+
+All projects are located under `/home/agent/workspace`. Work only inside this directory, with no exceptions, unless the user explicitly asks for access outside the sandbox.
 
 When starting work in an existing project directory, check whether `WORKLOG.md` exists and read it for prior context. Commands that change files define their own required worklog steps; follow the command workflow exactly.
 
-Create a new subdirectory under `/home/opencode/workspace` only when the user asks for a new standalone task or project. If an existing project directory might match the request, ask the user to confirm whether to use it, and recommend a clear directory name before creating anything new. Do not create nested duplicate project directories.
+Create a new subdirectory under `/home/agent/workspace` only when the user asks for a new standalone task or project. If an existing project directory might match the request, ask the user to confirm whether to use it, and recommend a clear directory name before creating anything new. Do not create nested duplicate project directories.
 
 Prefer focused changes over broad rewrites. Extend existing behavior through the smallest fitting change before replacing working code. Before large refactors, first produce a short audit and wait for the user to choose what should be changed.
 

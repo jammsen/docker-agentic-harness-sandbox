@@ -9,7 +9,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/reset-sandbox.sh [options]
 
-Reset all generated OpenCode sandbox state from:
+Reset all generated sandbox state from:
   - workspace/
   - data/
 

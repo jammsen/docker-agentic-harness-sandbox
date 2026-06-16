@@ -3,8 +3,8 @@
 set -euo pipefail
 umask 0027
 
-APP_USER=opencode
-APP_GROUP=opencode
+APP_USER=agent
+APP_GROUP=agent
 APP_HOME=/home/$APP_USER
 readonly APP_USER APP_GROUP APP_HOME
 
@@ -56,7 +56,7 @@ if [[ "$NEEDS_CHOWN" = "true" ]]; then
     find "$APP_HOME" -xdev -exec chown "$APP_USER":"$APP_GROUP" {} +
 fi
 
-OPENCODE_WORKSPACE="/home/opencode/workspace"
+OPENCODE_WORKSPACE="/home/agent/workspace"
 readonly OPENCODE_WORKSPACE
 export OPENCODE_WORKSPACE
 
@@ -65,27 +65,73 @@ if [[ ! -d "$OPENCODE_WORKSPACE" ]]; then
     exit 1
 fi
 
-TOOL="opencode"
+# Build the ordered list of available tools from TOOLS (defined in Dockerfile, overridable in compose.yml).
+# First entry is the default. Each name is validated and checked against installed binaries.
+AVAILABLE_TOOLS=()
+IFS=',' read -ra _TOOLS_LIST <<< "$TOOLS"
+for _t in "${_TOOLS_LIST[@]}"; do
+    _t="${_t// /}"  # trim whitespace
+    # Validate tool name is safe (alphanumeric, hyphens, underscores only)
+    if ! [[ "$_t" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        echo "> [Warning] Skipping invalid tool name '$_t' in TOOLS"
+        continue
+    fi
+    if gosu "$APP_USER":"$APP_GROUP" bash -c "command -v '$_t'" &>/dev/null; then
+        AVAILABLE_TOOLS+=("$_t")
+    else
+        echo "> [Warning] Tool '$_t' listed in TOOLS but not found — skipping"
+    fi
+done
 
-if [[ "${ENABLE_OMP:-}" = "true" ]] && gosu "$APP_USER":"$APP_GROUP" bash -c 'command -v omp' &>/dev/null; then
+if [[ ${#AVAILABLE_TOOLS[@]} -eq 0 ]]; then
+    echo ">>> [Entrypoint] No tools available. Ensure at least one tool binary is installed in the image."
+    exit 1
+fi
+
+# If DEFAULT_TOOL is set (e.g. via --tool in start.sh), skip the interactive menu.
+TOOL=""
+if [[ -n "${DEFAULT_TOOL:-}" ]]; then
+    for _t in "${AVAILABLE_TOOLS[@]}"; do
+        if [[ "$_t" = "$DEFAULT_TOOL" ]]; then
+            TOOL="$_t"
+            break
+        fi
+    done
+    if [[ -z "$TOOL" ]]; then
+        echo ">>> [Entrypoint] DEFAULT_TOOL='$DEFAULT_TOOL' not available. Available: ${AVAILABLE_TOOLS[*]}"
+        exit 1
+    fi
+    echo "> Using tool '$TOOL' (from DEFAULT_TOOL)"
+elif [[ ${#AVAILABLE_TOOLS[@]} -eq 1 ]]; then
+    TOOL="${AVAILABLE_TOOLS[0]}"
+else
     echo ""
     echo "Select which tool to start:"
-    echo "  1. opencode  (default)"
-    echo "  2. omp"
+    for i in "${!AVAILABLE_TOOLS[@]}"; do
+        if [[ $i -eq 0 ]]; then
+            echo "  $((i+1)). ${AVAILABLE_TOOLS[$i]}  (default)"
+        else
+            echo "  $((i+1)). ${AVAILABLE_TOOLS[$i]}"
+        fi
+    done
     echo ""
     read -r -p "Enter selection [1]: " SELECTION
     case "$SELECTION" in
-        1|"") TOOL="opencode" ;;   # forcing explicit numbered input for opencode since it's the default and empty input is common
-        2)    TOOL="omp" ;;
+        ""|1) TOOL="${AVAILABLE_TOOLS[0]}" ;;
         *)
-        echo ">>> Invalid selection '$SELECTION' — defaulting to opencode"
-        TOOL="opencode" ;;
+            if [[ "$SELECTION" =~ ^[0-9]+$ ]] && [[ "$SELECTION" -ge 2 ]] && [[ "$((SELECTION-1))" -lt "${#AVAILABLE_TOOLS[@]}" ]]; then
+                TOOL="${AVAILABLE_TOOLS[$((SELECTION-1))]}"
+            else
+                echo ">>> Invalid selection '$SELECTION' — defaulting to ${AVAILABLE_TOOLS[0]}"
+                TOOL="${AVAILABLE_TOOLS[0]}"
+            fi
+            ;;
     esac
     echo ""
 fi
 
 # HOME → workspace so opencode session state lands on the mounted volume.
-# omp keeps the real HOME (/home/opencode) so it finds its config/logs there.
+# omp keeps the real HOME (/home/agent) so it finds its config/logs there.
 if [[ "$TOOL" = "opencode" ]]; then
     echo "> Set HOME to $OPENCODE_WORKSPACE (mounted workspace volume)"
     export HOME="$OPENCODE_WORKSPACE"

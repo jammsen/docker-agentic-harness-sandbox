@@ -1,7 +1,15 @@
 services:
-  opencode:
-    build: .
-    container_name: opencode-sandbox
+  sandbox:
+    build:
+      context: .
+      args:
+        PYTHON_VERSION: "3.13"   # override here to change the Python version
+    container_name: agentic-harness-sandbox
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - HOME=/home/agent
+      - TOOLS=opencode,omp   # order defines menu order and default (first = default)
     stdin_open: true
     tty: true
     read_only: false                   # opencode writes session state
@@ -10,27 +18,23 @@ services:
     cap_drop:
       - ALL                            # drop all Linux capabilities
     cap_add:
-      - CHOWN                          # entrypoint: chown -R on /home/opencode
+      - CHOWN                          # entrypoint: chown -R on /home/agent
       - SETUID                         # gosu + useradd/usermod
       - SETGID                         # gosu + groupadd/groupmod
       - DAC_OVERRIDE                   # allows root to chown/access files it doesn't own
     volumes:
       # Config files (read-only mounts)
-      - ./config/opencode.json:/home/opencode/.config/opencode/opencode.json:ro
-      - ./.opencode/skills:/home/opencode/.config/opencode/skills:ro
-      - ./.opencode/commands:/home/opencode/.config/opencode/commands:ro
-      - ./config/auth.json:/home/opencode/.local/share/opencode/auth.json:ro
+      - ./config/opencode.json:/home/agent/.config/opencode/opencode.json:ro
+      - ./config/AGENTS.md:/home/agent/.config/opencode/AGENTS.md:ro
+      - ./.opencode/skills:/home/agent/.config/opencode/skills:ro
+      - ./.opencode/commands:/home/agent/.config/opencode/commands:ro
       # OMP Config files (read-only mounts)
-      - ./config/omp-config.yml:/home/opencode/.omp/agent/config.yml:ro
-      - ./config/omp-models.yml:/home/opencode/.omp/agent/models.yml:ro
-      - ./config/omp-AGENTS.md:/home/opencode/.omp/agent/AGENTS.md:ro
-      # Your project workspace (read-write so opencode can edit files)
-      - ./workspace:/home/opencode/workspace:rw
-      - ./data:/home/opencode/.local/share/opencode
-      - ./config/auth.json:/home/opencode/.local/share/opencode/auth.json:ro
+      - ./config/omp-config.yml:/home/agent/.omp/agent/config.yml:ro
+      - ./config/omp-models.yml:/home/agent/.omp/agent/models.yml:ro
+      - ./config/omp-AGENTS.md:/home/agent/.omp/agent/AGENTS.md:ro
+      # Your project workspace (read-write so tools can edit files)
+      - ./workspace:/home/agent/workspace:rw
+      - ./data:/home/agent/.local/share/opencode
+      - ./config/auth.json:/home/agent/.local/share/opencode/auth.json:ro
     # No network_mode: host — use bridge so container is isolated
     # but can still reach your vLLM server via host IP
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      - HOME=/home/opencode
