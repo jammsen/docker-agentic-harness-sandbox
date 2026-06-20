@@ -10,6 +10,7 @@ services:
     environment:
       - HOME=/home/agent
       - TOOLS=opencode,omp   # order defines menu order and default (first = default)
+    init: true                         # tini as PID 1 — reaps zombie child processes
     stdin_open: true
     tty: true
     read_only: false                   # opencode writes session state
@@ -22,14 +23,17 @@ services:
       - SETUID                         # gosu + useradd/usermod
       - SETGID                         # gosu + groupadd/groupmod
       - DAC_OVERRIDE                   # allows root to chown/access files it doesn't own
+    ports:
+      - "1111:1111/tcp"
     volumes:
       # Config files (read-only mounts)
       - ./config/opencode.json:/home/agent/.config/opencode/opencode.json:ro
       - ./config/AGENTS.md:/home/agent/.config/opencode/AGENTS.md:ro
       - ./.opencode/skills:/home/agent/.config/opencode/skills:ro
       - ./.opencode/commands:/home/agent/.config/opencode/commands:ro
-      # OMP Config files (read-only mounts)
-      - ./config/omp-config.yml:/home/agent/.omp/agent/config.yml:ro
+      # OMP Config files (omp-config.yml must be rw so OMP can persist setupVersion)
+      - ./config/omp-config.yml:/home/agent/.omp/agent/config.yml:rw
+      - ./config/omp-settings.json:/home/agent/.omp/agent/settings.json:rw
       - ./config/omp-models.yml:/home/agent/.omp/agent/models.yml:ro
       - ./config/omp-AGENTS.md:/home/agent/.omp/agent/AGENTS.md:ro
       # Your project workspace (read-write so tools can edit files)

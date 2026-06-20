@@ -15,13 +15,29 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # Install basic tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     ca-certificates \
     curl \
+    dnsutils \
     git \
+    git-lfs \
     gosu \
+    iproute2 \
+    iputils-ping \
+    jq \
+    lsof \
+    netcat-openbsd \
     openssh-client \
+    pkg-config \
+    postgresql-client \
+    procps \
     ripgrep \
+    sqlite3 \
+    tree \
     tzdata \
+    unzip \
+    wget \
+    zip \
     && apt-get autoremove -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*

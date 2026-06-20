@@ -1,0 +1,28 @@
+{
+  "theme": {
+    "dark": "dark-abyss",
+    "light": "light",
+    "symbolPreset": "ascii",
+    "colorBlindMode": false
+  },
+  "statusLine": {
+    "preset": "default",
+    "separator": "powerline-thin",
+    "sessionAccent": true,
+    "transparent": false,
+    "showHookStatus": true
+  },
+  "display": {
+    "largeHeadings": false,
+    "terminalHyperlinks": "auto",
+    "shimmer": "classic",
+    "smoothStreaming": true,
+    "showTokenUsage": false,
+    "showHardwareCursor": true,
+    "showResolvedModelBadge": false
+  },
+  "images": {
+    "autoResize": true,
+    "block": false
+  }
+}

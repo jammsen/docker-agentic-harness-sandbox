@@ -20,6 +20,40 @@ Use the mounted sandbox commands for repeatable workflows when they fit the task
 
 Do not treat commands as mandatory for every task. They are shortcuts for user-invoked workflows and should not replace direct, focused work when the user has already given a clear instruction.
 
+## Running Background Servers
+
+Port 1111 is the single externally reachable port. If the user wants to expose a server (dev server, HTTP API, or any other service), bind it to `0.0.0.0:1111`.
+
+**Always check before starting a server** — do not blindly launch a new process:
+
+```bash
+ss -tlnp | grep 1111
+```
+
+If something is already listening, do not start another instance. If the port is free, start the server with `nohup` so it survives the current shell invocation:
+
+```bash
+nohup <your server command> > /tmp/server.log 2>&1 & echo $! > /tmp/server.pid
+```
+
+Use `/tmp/server.log` for output and `/tmp/server.pid` to track the PID. To stop the server:
+
+```bash
+kill $(cat /tmp/server.pid) 2>/dev/null || true
+```
+
+After killing, verify the port is free before proceeding:
+
+```bash
+ss -tlnp | grep 1111 || echo "Port 1111 is free"
+```
+
+**Never use `lsof -i :<port>` to find or kill processes** — `lsof` network socket inspection hangs in this container due to capability restrictions. Always use the PID file to kill, and `ss` to verify.
+
+**Never use `pkill -f` as a primary kill method** — many runtimes (Node.js, Python, Rust binaries, JVM) spawn child processes whose names do not match the original command. The PID file is the only reliable kill target.
+
+Never use `&` alone without `nohup` for servers — background processes started without `nohup` may not survive shell resets.
+
 ## Skills
 
 Use the `write-worklog` skill only when a detailed `WORKLOG.md` entry is needed or the user asks for worklog formatting. For command-driven workflows, prefer the worklog format embedded in the command itself.

@@ -25,7 +25,7 @@ done
 docker compose build "${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}"
 
 if [[ -n "$DEFAULT_TOOL" ]]; then
-    docker compose run --rm -e DEFAULT_TOOL="$DEFAULT_TOOL" sandbox
+    docker compose run --rm --service-ports -e DEFAULT_TOOL="$DEFAULT_TOOL" sandbox
 else
-    docker compose run --rm sandbox
+    docker compose run --rm --service-ports sandbox
 fi

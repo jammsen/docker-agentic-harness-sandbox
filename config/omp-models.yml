@@ -8,4 +8,8 @@ providers:
       - id: qwen3.6-35b
         name: "Qwen3.6 35B A3B"
         contextWindow: 131072
-        maxTokens: 8192
+        maxTokens: 16384
+        # Aggressive context trim to prevent hanging at large contexts:
+        # OMP will refuse to send a request that would exceed contextWindow,
+        # so keeping maxTokens conservative leaves headroom for the prompt.
+        systemPromptSize: 4096

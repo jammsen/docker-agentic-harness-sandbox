@@ -1,4 +1,13 @@
-modelRoles:
+modelRoles: 
   default: vllm/qwen3.6-35b
   smol: vllm/qwen3.6-35b
   slow: vllm/qwen3.6-35b
+symbolPreset: unicode
+theme: 
+  dark: dark-abyss
+setupVersion: 1
+# Context management — prevent hanging at large contexts
+context:
+  maxTokens: 120000
+  summarizeAt: 90000
+  summaryTokens: 8000
