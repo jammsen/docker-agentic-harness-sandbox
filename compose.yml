@@ -28,7 +28,8 @@ services:
       - SETGID                         # gosu + groupadd/groupmod
       - DAC_OVERRIDE                   # allows root to chown/access files it doesn't own
     ports:
-      - "1111:1111/tcp"   # wetty browser terminal — open http://<host>:1111
+      - "1111:1111/tcp"   # wetty browser terminal — open https://<host>:1111
+      - "1112:1112/tcp"   # image upload companion — open https://<host>:1112
       - "3000:3000/tcp"   # agent dev server port (Vite, Express, Django, Flask, etc.)
     volumes:
       # Config files (read-only mounts)
@@ -36,6 +37,7 @@ services:
       - ./config/AGENTS.md:/home/agent/.config/opencode/AGENTS.md:ro
       - ./.opencode/skills:/home/agent/.config/opencode/skills:ro
       - ./.opencode/commands:/home/agent/.config/opencode/commands:ro
+      - ./.opencode/agents:/home/agent/.config/opencode/agents:ro
       # OMP Config files (omp-config.yml must be rw so OMP can persist setupVersion)
       - ./config/omp-config.yml:/home/agent/.omp/agent/config.yml:rw
       - ./config/omp-settings.json:/home/agent/.omp/agent/settings.json:rw

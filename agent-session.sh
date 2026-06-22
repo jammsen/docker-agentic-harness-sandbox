@@ -2,7 +2,7 @@
 # Runs inside the browser terminal — spawned by wetty for each browser connection.
 # Self-wraps in GNU screen so closing the browser tab detaches rather than kills the session.
 # On reconnect, screen reattaches to the same running agent.
-# Inherits AVAILABLE_TOOLS_ENV, DEFAULT_TOOL, TOOLS, OPENCODE_WORKSPACE from entrypoint.sh.
+# Inherits AVAILABLE_TOOLS_ENV, DEFAULT_TOOL, TOOLS from entrypoint.sh.
 
 # wetty must run as root for local/command mode; drop to agent user immediately.
 # gosu preserves environment variables so all exported vars from entrypoint.sh carry through.
@@ -70,8 +70,6 @@ if [[ -z "${STY:-}" ]]; then
 fi
 # --- From here on we are inside a screen session ---
 
-OPENCODE_WORKSPACE="${OPENCODE_WORKSPACE:-/home/agent/workspace}"
-
 # Rebuild available tool list from AVAILABLE_TOOLS_ENV (space-separated) exported by entrypoint.sh.
 # Fall back to scanning TOOLS env var directly if env var is missing (defensive).
 AVAILABLE_TOOLS=()
@@ -135,10 +133,9 @@ else
     echo ""
 fi
 
-# HOME → workspace so opencode session state lands on the mounted volume.
-# omp keeps the real HOME (/home/agent) so it finds its config/logs there.
-if [[ "$TOOL" = "opencode" ]]; then
-    export HOME="$OPENCODE_WORKSPACE"
-fi
+# Start all tools from the workspace directory.
+# omp auto-switches away from ~ unless --allow-home is passed, and opencode
+# uses CWD as its project root — both need a proper starting directory.
+cd /home/agent/workspace
 
 exec "$TOOL"

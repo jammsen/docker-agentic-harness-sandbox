@@ -58,7 +58,6 @@ fi
 
 OPENCODE_WORKSPACE="/home/agent/workspace"
 readonly OPENCODE_WORKSPACE
-export OPENCODE_WORKSPACE
 
 if [[ ! -d "$OPENCODE_WORKSPACE" ]]; then
     echo ">>> [Entrypoint] Workspace directory '$OPENCODE_WORKSPACE' not found — is the volume mounted?"
@@ -105,6 +104,10 @@ fi
 
 # Export available tools as a space-separated string — inherited by agent-session.sh via wetty.
 export AVAILABLE_TOOLS_ENV="${AVAILABLE_TOOLS[*]}"
+
+# Start the image upload companion server in the background (runs as agent)
+gosu agent node /upload-server.js &
+echo "> Upload server started on port 1112 — https://<your-server-ip>:1112"
 
 echo "> Starting WeTTY browser terminal on port 1111..."
 echo "> Connect at: https://<your-server-ip>:1111  (accept the self-signed cert warning once)"
