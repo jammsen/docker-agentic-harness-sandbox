@@ -91,6 +91,32 @@ services:
     volumes:
       - valkey-data:/data
 
+  # harness-proxy — Rust replacement for litellm + claude-shim.js (issue #10).
+  # Currently a Step-1 stub (serves hardcoded responses); built/run here so we can iterate.
+  # NOT yet wired in: the sandbox still points ANTHROPIC_BASE_URL at the shim/litellm path.
+  # Cutover (PLAN.md step 6, once proven): set the sandbox ANTHROPIC_BASE_URL to
+  # http://agentic-harness-proxy:4000 and remove the litellm service below.
+  harness-proxy:
+    build:
+      context: ./harness-proxy
+    container_name: agentic-harness-proxy
+    environment:
+      - HARNESS_PROXY_BIND=0.0.0.0:4000           # bind for standalone container (network-reachable)
+      - VLLM_URL=http://10.0.0.13:8000            # used from Step 2 (translation) onward
+      - VLLM_MODEL=qwen3.6-35b
+    # No published ports — only reachable on the internal docker network, like litellm.
+    # vLLM (10.0.0.13) is a routable LAN IP, so no extra_hosts/host-gateway needed.
+    init: true                                    # tini as PID 1 — reaps the process cleanly
+    restart: unless-stopped
+    read_only: true                               # static binary writes nothing to disk
+    user: "65532:65532"                           # non-root (also baked into the image)
+    security_opt:
+      - no-new-privileges:true                    # no privilege escalation
+    cap_drop:
+      - ALL                                       # drop every Linux capability
+    pids_limit: 64                                # cap fork bombs
+    mem_limit: 128m                               # tiny proxy — hard ceiling
+
   litellm:
     image: ghcr.io/berriai/litellm:v1.89.3        # latest stable as of 2026-06-22; post-attack (1.82.7/1.82.8 were the compromised PyPI versions)
     container_name: agentic-litellm
