@@ -3,7 +3,8 @@
 Self-contained brief so a fresh Claude/LLM session can pick this up cold.
 Tracks GitHub issue **#10**. Headroom (compression) is **out of scope** → issue **#11**.
 
-Branch: `feat/harness-proxy` (off `feat/webtty`).
+Branch: `feat/harness-proxy` (was off `feat/webtty`; that branch is now merged, so this branch
+has been **rebased onto `main`** — see §0a for the main-side deltas to account for at cutover).
 
 ---
 
@@ -73,7 +74,42 @@ Branch: `feat/harness-proxy` (off `feat/webtty`).
   Compose runs the proxy standalone (`agentic-harness-proxy`, bind `0.0.0.0:4000`, no published
   ports) so it doesn't interfere. Cutover is Step 7.
 - **➡️ Next: Step 7 (final)** — cutover: remove litellm + claude-shim, point `ANTHROPIC_BASE_URL` at
-  the proxy, wire it into `entrypoint.sh`/`compose.yml`.
+  the proxy, wire it into `entrypoint.sh`/`compose.yml`. See §0a for the main-side deltas first.
+
+---
+
+## 0a. Rebased onto `main` — deltas to account for at cutover (Step 7)
+
+This branch was cut off `feat/webtty`; that branch is now merged and `main` moved on (searxng/valkey
+MCP stack, webtty fixes, shim hardening). Rebased clean (only `compose.yml` conflicted — both sides
+just add services). **Concept still holds — vLLM re-verified live (2026-06-28):**
+
+| Re-verified against `10.0.0.13:8000` | Result |
+|---|---|
+| reasoning field, non-stream | `message.reasoning` (✅ matches `openai.rs` — **not** `reasoning_content`) |
+| reasoning field, stream | `delta.reasoning` (✅ matches `stream.rs`) |
+| tool calls | native OpenAI `tool_calls`, `finish_reason:tool_calls` (✅ 1:1, no text parsing) |
+
+**What `main` changed that the cutover must honor:**
+1. **Thinking is now ON end-to-end.** `config/claude/settings.json` flipped `MAX_THINKING_TOKENS`
+   0→**8000** and `alwaysThinkingEnabled` false→**true**. So Claude now *requests* thinking and expects
+   `thinking` blocks back. Our proxy already surfaces `delta.reasoning`→`thinking` when the client
+   enables it (Step 4) — so this works — but it makes that path **load-bearing**, not optional. §5a's
+   "param strip drops `thinking`" means: drop it from the *upstream* OpenAI body (vLLM rejects the
+   Anthropic object; thinking is on server-side via `--default-chat-template-kwargs enable_thinking`),
+   **not** ignore it — we still read it to gate reasoning surfacing.
+2. **`VLLM_URL` convention diverges.** `main`'s litellm + entrypoint preflight use `VLLM_URL` **with**
+   a `/v1` suffix (`http://host:8000/v1`); our proxy treats `VLLM_URL` as the server **root** and
+   appends `/v1/chat/completions` + `/tokenize` itself. To let one env value serve both during
+   coexistence and avoid `/v1/v1/...` at cutover, the proxy now **normalizes** a trailing `/v1` away
+   (see `normalize_vllm_url` in `main.rs`).
+3. **Inherit the hardened shim's timeout.** `main`'s `claude-shim.js` gained a **600 s** upstream
+   timeout + a `headersSent` guard (don't re-write status mid-stream). Our streaming path already
+   omits the overall timeout and ends cleanly mid-stream (covers the guard); the non-stream default
+   was raised 180→**600 s** to match the shim's proven ceiling now that reasoning makes replies longer.
+4. **New searxng MCP** (`workspace/.mcp.json`, `config/omp/mcp.json`) and `WebSearch`/`WebFetch` now
+   `deny`. This rides the MCP path, not `/v1/messages`, so the proxy is untouched — but it means *more*
+   tool traffic, raising the stakes on tool-call streaming (already in scope, already verified).
 
 ---
 
@@ -206,8 +242,10 @@ Headers: pass through, force the upstream model to `VLLM_MODEL`, send `Authoriza
   - Only do this when an image is actually present (text-only tool_results stay byte-identical).
   - Reference logic: `scripts/claude-shim.js` (`hoistToolResultImages`) and
     `ideas/litellm-issue-tool_result-image-drop.md` (full root-cause writeup + suggested upstream fix).
-- **Param strip** (replaces LiteLLM `drop_params: true`): drop fields vLLM rejects — `thinking`,
-  `reasoning_effort`, and any Anthropic-only knobs. Map `max_tokens`, `temperature`, `top_p`,
+- **Param strip** (replaces LiteLLM `drop_params: true`): drop fields vLLM rejects from the *upstream*
+  body — `thinking`, `reasoning_effort`, and any Anthropic-only knobs. **Note:** `thinking` is still
+  *read* (to gate reasoning→`thinking`-block surfacing, §0a #1) — it's stripped from what we send to
+  vLLM, not ignored. Map `max_tokens`, `temperature`, `top_p`,
   `stop_sequences`→`stop`, `stream`. Map `tools` (Anthropic `input_schema` → OpenAI
   `function.parameters`) and `tool_choice`.
 
@@ -299,11 +337,13 @@ debug a failure from the logs **without** any prompt content, secret, or token e
    `x-request-id`, metadata-only access log; one `ProxyError` enum → correct status + Anthropic
    envelope; connect + tunable request timeouts. Verified live: malformed→400, dead upstream→502,
    hung upstream→504, with a request id + status + latency and **no message content** in logs.
-7. **(GATED — do last, after proxy proven)** Remove the old stack:
+7. **(GATED — do last, after proxy proven)** Remove the old stack (account for §0a deltas):
    - `compose.yml`: delete the `litellm` service + `LITELLM_UPSTREAM` env; add proxy build/run.
    - delete `config/litellm-config.yaml`, `scripts/claude-shim.js`.
    - `entrypoint.sh`: drop the `claude-shim` supervisor block; start `harness-proxy` instead.
-   - `config/claude/settings.json`: `ANTHROPIC_BASE_URL` → `http://127.0.0.1:4000`.
+     Keep the `VLLM_URL` preflight — the proxy now accepts it **with or without** `/v1` (§0a #2).
+   - `config/claude/settings.json`: `ANTHROPIC_BASE_URL` → `http://127.0.0.1:4000`. Leave
+     `MAX_THINKING_TOKENS=8000` / `alwaysThinkingEnabled=true` as-is — the proxy handles thinking (§0a #1).
    - Leave `scripts/upload-server.js` and `scripts/analyze-image.js` **untouched** (out of scope).
 
 Until Step 6, run the proxy **alongside** LiteLLM (different port) so nothing breaks during dev.
