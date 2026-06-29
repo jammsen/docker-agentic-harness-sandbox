@@ -64,7 +64,12 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     pub fn text(role: &str, text: String) -> Self {
-        Self { role: role.into(), content: Some(MessageContent::Text(text)), tool_calls: None, tool_call_id: None }
+        Self {
+            role: role.into(),
+            content: Some(MessageContent::Text(text)),
+            tool_calls: None,
+            tool_call_id: None,
+        }
     }
 }
 

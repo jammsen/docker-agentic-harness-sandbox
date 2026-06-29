@@ -370,7 +370,7 @@ Until the Step 7 cutover (old stack removed), run the proxy **alongside** LiteLL
 - ❌ No Headroom / compression here → #11.
 - ❌ Don't port `upload-server.js` or `analyze-image.js` (Node stdlib, not the bloat).
 - ❌ No multi-crate workspace, no plugin abstraction, no config file — env vars only.
-- ❌ Don't delete LiteLLM until the proxy is proven (Step 6 is last).
+- ❌ Don't delete LiteLLM until the proxy is proven and the Step 7 cutover/removal is actually happening.
 - ❌ Don't oversell "<15 MB RAM" — realistic is 15–40 MB with tokio + stream buffers.
 - ❌ **Never log request/response bodies, prompt or `system` text, image data, the `Authorization`
   header, or token counts** — metadata only (§5d). Prompts carry secrets/PII.

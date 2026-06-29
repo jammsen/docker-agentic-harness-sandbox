@@ -4,7 +4,7 @@
 # Built for the NATIVE build arch (amd64 or arm64) — no cross-compile. Fallback if a fully
 # static build ever breaks: ship a chiselled Ubuntu rootfs instead of scratch — see PLAN.md §3.
 
-FROM ubuntu:26.04@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e5718d46ff64 AS builder
+FROM ubuntu:26.04@sha256:53958ec7b67c2c9355df922dd08dbf0360611f8c3cdb656875e81873db9ffdba AS builder
 
 # Provided by BuildKit from the build platform (amd64/arm64). Falls back to dpkg if unset.
 ARG TARGETARCH

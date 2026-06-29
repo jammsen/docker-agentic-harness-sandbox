@@ -41,7 +41,11 @@ pub fn to_openai(req: MessagesRequest, model: String) -> ChatRequest {
         ts.into_iter()
             .map(|t| ToolDef {
                 kind: "function",
-                function: FunctionDef { name: t.name, description: t.description, parameters: t.input_schema },
+                function: FunctionDef {
+                    name: t.name,
+                    description: t.description,
+                    parameters: t.input_schema,
+                },
             })
             .collect()
     });
@@ -74,7 +78,10 @@ fn push_blocks(out: &mut Vec<ChatMessage>, role: &str, blocks: Vec<ContentBlock>
                 ContentBlock::ToolUse { id, name, input } => tool_calls.push(ToolCallOut {
                     id,
                     kind: "function",
-                    function: FunctionCallOut { name, arguments: input.to_string() },
+                    function: FunctionCallOut {
+                        name,
+                        arguments: input.to_string(),
+                    },
                 }),
                 _ => {} // images/thinking from an assistant turn are dropped
             }
@@ -99,7 +106,10 @@ fn push_blocks(out: &mut Vec<ChatMessage>, role: &str, blocks: Vec<ContentBlock>
         match b {
             ContentBlock::Text { text } => parts.push(ContentPart::Text { text }),
             ContentBlock::Image { source } => parts.push(image_part(source)),
-            ContentBlock::ToolResult { tool_use_id, content } => {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+            } => {
                 let (text, mut images) = split_tool_result(content);
                 let content = if text.is_empty() && !images.is_empty() {
                     HOIST_PLACEHOLDER.to_string()
@@ -118,14 +128,26 @@ fn push_blocks(out: &mut Vec<ChatMessage>, role: &str, blocks: Vec<ContentBlock>
         }
     }
     if !parts.is_empty() {
-        out.push(ChatMessage { role: role.into(), content: Some(MessageContent::Parts(parts)), tool_calls: None, tool_call_id: None });
+        out.push(ChatMessage {
+            role: role.into(),
+            content: Some(MessageContent::Parts(parts)),
+            tool_calls: None,
+            tool_call_id: None,
+        });
     }
     // 🔑 Image hoist: OpenAI can't carry images in a `tool` message, so re-attach them in a
     // fresh user message right after (claude-shim.js `hoistToolResultImages`, PLAN.md §5a).
     if !hoisted.is_empty() {
-        let mut content = vec![ContentPart::Text { text: HOIST_LEAD.to_string() }];
+        let mut content = vec![ContentPart::Text {
+            text: HOIST_LEAD.to_string(),
+        }];
         content.extend(hoisted);
-        out.push(ChatMessage { role: "user".into(), content: Some(MessageContent::Parts(content)), tool_calls: None, tool_call_id: None });
+        out.push(ChatMessage {
+            role: "user".into(),
+            content: Some(MessageContent::Parts(content)),
+            tool_calls: None,
+            tool_call_id: None,
+        });
     }
 }
 
@@ -151,7 +173,9 @@ fn split_tool_result(content: Option<ToolResultContent>) -> (String, Vec<Content
 
 fn image_part(source: ImageSource) -> ContentPart {
     ContentPart::ImageUrl {
-        image_url: ImageUrl { url: format!("data:{};base64,{}", source.media_type, source.data) },
+        image_url: ImageUrl {
+            url: format!("data:{};base64,{}", source.media_type, source.data),
+        },
     }
 }
 
@@ -220,46 +244,74 @@ pub fn request_text(req: &MessagesRequest) -> String {
 
 /// OpenAI chat response -> Anthropic Messages response (non-streaming). `thinking` surfaces vLLM's
 /// reasoning as a thinking block only when the client enabled it (PLAN.md §0).
-pub fn to_anthropic(resp: ChatResponse, model: String, thinking: bool) -> Result<MessagesResponse, crate::ProxyError> {
+pub fn to_anthropic(
+    resp: ChatResponse,
+    model: String,
+    thinking: bool,
+) -> Result<MessagesResponse, crate::ProxyError> {
     let (msg, finish) = match resp.choices.into_iter().next() {
         Some(c) => (c.message, c.finish_reason),
-        None => Default::default(),
+        None => return Err(crate::ProxyError::Upstream("upstream returned no choices")),
     };
     let usage = resp.usage.unwrap_or_default();
 
     let mut content = Vec::new();
     if thinking {
         if let Some(r) = msg.reasoning.filter(|r| !r.is_empty()) {
-            content.push(OutputBlock::Thinking { thinking: r, signature: anthropic::SYNTHETIC_SIGNATURE.into() });
+            content.push(OutputBlock::Thinking {
+                thinking: r,
+                signature: anthropic::SYNTHETIC_SIGNATURE.into(),
+            });
         }
     }
     if let Some(t) = msg.content.filter(|t| !t.is_empty()) {
         content.push(OutputBlock::Text { text: t });
     }
-    for tc in msg.tool_calls {
+    for (idx, tc) in msg.tool_calls.into_iter().enumerate() {
+        let name = tc.function.name.filter(|n| !n.trim().is_empty()).ok_or(
+            crate::ProxyError::Upstream("upstream returned malformed tool_call name"),
+        )?;
         // arguments is a JSON-object string. Empty/absent means a no-arg call ({}); anything
         // non-empty that won't parse is a corrupt tool-call contract — fail rather than invent {}.
         let input = match tc.function.arguments {
-            Some(a) if !a.trim().is_empty() => serde_json::from_str(&a)
-                .map_err(|_| crate::ProxyError::Upstream("upstream returned malformed tool_call arguments"))?,
+            Some(a) if !a.trim().is_empty() => {
+                let parsed: Value = serde_json::from_str(&a).map_err(|_| {
+                    crate::ProxyError::Upstream("upstream returned malformed tool_call arguments")
+                })?;
+                if !parsed.is_object() {
+                    return Err(crate::ProxyError::Upstream(
+                        "upstream returned non-object tool_call arguments",
+                    ));
+                }
+                parsed
+            }
             _ => json!({}),
         };
         content.push(OutputBlock::ToolUse {
-            id: tc.id.unwrap_or_else(|| "toolu_proxy".into()),
-            name: tc.function.name.unwrap_or_default(),
+            id: tc
+                .id
+                .filter(|id| !id.trim().is_empty())
+                .unwrap_or_else(|| format!("toolu_proxy_{idx}")),
+            name,
             input,
         });
     }
 
     Ok(MessagesResponse {
-        id: resp.id.map(|i| format!("msg_{i}")).unwrap_or_else(|| "msg_proxy".to_string()),
+        id: resp
+            .id
+            .map(|i| format!("msg_{i}"))
+            .unwrap_or_else(|| "msg_proxy".to_string()),
         kind: "message",
         role: "assistant",
         model,
         content,
         stop_reason: stop_reason(finish.as_deref()),
         stop_sequence: None,
-        usage: anthropic::Usage { input_tokens: usage.prompt_tokens, output_tokens: usage.completion_tokens },
+        usage: anthropic::Usage {
+            input_tokens: usage.prompt_tokens,
+            output_tokens: usage.completion_tokens,
+        },
     })
 }
 
@@ -330,7 +382,12 @@ mod tests {
         let body = serde_json::to_value(&oai.messages[1]).unwrap();
         assert_eq!(body["content"][0]["text"], HOIST_LEAD);
         assert_eq!(body["content"][1]["type"], "image_url");
-        assert!(body["content"][1]["image_url"]["url"].as_str().unwrap().starts_with("data:image/png;base64,AAAA"));
+        assert!(
+            body["content"][1]["image_url"]["url"]
+                .as_str()
+                .unwrap()
+                .starts_with("data:image/png;base64,AAAA")
+        );
     }
 
     #[test]
@@ -381,7 +438,16 @@ mod tests {
         }))
         .unwrap();
         let a = to_anthropic(resp, "m".to_string(), true).unwrap();
-        let kinds: Vec<_> = a.content.iter().map(|b| serde_json::to_value(b).unwrap()["type"].as_str().unwrap().to_string()).collect();
+        let kinds: Vec<_> = a
+            .content
+            .iter()
+            .map(|b| {
+                serde_json::to_value(b).unwrap()["type"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
         assert_eq!(kinds, ["thinking", "text"]);
     }
 
@@ -395,5 +461,58 @@ mod tests {
         }))
         .unwrap();
         assert!(to_anthropic(resp, "m".to_string(), false).is_err());
+    }
+
+    #[test]
+    fn empty_upstream_choices_fail_instead_of_successful_empty_message() {
+        let resp: ChatResponse = serde_json::from_value(json!({ "choices": [] })).unwrap();
+        assert!(to_anthropic(resp, "m".to_string(), false).is_err());
+    }
+
+    #[test]
+    fn non_object_tool_arguments_fail() {
+        let resp: ChatResponse = serde_json::from_value(json!({
+            "choices": [{
+                "message": { "tool_calls": [{ "id": "call_1", "function": { "name": "f", "arguments": "[1,2]" } }] },
+                "finish_reason": "tool_calls"
+            }]
+        }))
+        .unwrap();
+        assert!(to_anthropic(resp, "m".to_string(), false).is_err());
+    }
+
+    #[test]
+    fn missing_tool_name_fails_but_missing_id_gets_unique_fallback() {
+        let bad_name: ChatResponse = serde_json::from_value(json!({
+            "choices": [{
+                "message": { "tool_calls": [{ "id": "call_1", "function": { "arguments": "{}" } }] },
+                "finish_reason": "tool_calls"
+            }]
+        }))
+        .unwrap();
+        assert!(to_anthropic(bad_name, "m".to_string(), false).is_err());
+
+        let missing_ids: ChatResponse = serde_json::from_value(json!({
+            "choices": [{
+                "message": { "tool_calls": [
+                    { "function": { "name": "a", "arguments": "{}" } },
+                    { "function": { "name": "b", "arguments": "{}" } }
+                ] },
+                "finish_reason": "tool_calls"
+            }]
+        }))
+        .unwrap();
+        let msg = to_anthropic(missing_ids, "m".to_string(), false).unwrap();
+        let ids: Vec<_> = msg
+            .content
+            .iter()
+            .map(|b| {
+                serde_json::to_value(b).unwrap()["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(ids, ["toolu_proxy_0", "toolu_proxy_1"]);
     }
 }

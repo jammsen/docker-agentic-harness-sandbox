@@ -3,7 +3,7 @@
 
 use axum::{
     Json, Router,
-    extract::{Request, State, rejection::JsonRejection},
+    extract::{DefaultBodyLimit, Request, State, rejection::JsonRejection},
     http::{HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -29,12 +29,13 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 // 600s matches the proven ceiling of the claude-shim.js it replaces; reasoning (now on by default)
 // makes non-stream replies longer, so a tighter cap would 504 legitimate generations (PLAN.md §0a #3).
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 600;
+const DEFAULT_BODY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Clone)]
 struct AppState {
     client: reqwest::Client,
-    vllm_url: String,         // base URL, no trailing slash
-    vllm_model: String,       // forced upstream model
+    vllm_url: String,          // base URL, no trailing slash
+    vllm_model: String,        // forced upstream model
     request_timeout: Duration, // non-streaming overall timeout (HARNESS_PROXY_TIMEOUT_SECS)
 }
 
@@ -62,6 +63,10 @@ async fn main() {
             .and_then(|s| s.parse().ok())
             .unwrap_or(DEFAULT_REQUEST_TIMEOUT_SECS),
     );
+    let body_limit = env::var("HARNESS_PROXY_BODY_LIMIT_BYTES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_BODY_LIMIT_BYTES);
 
     let state = AppState {
         client: reqwest::Client::builder()
@@ -77,6 +82,7 @@ async fn main() {
         .route("/health", get(|| async { "ok" }))
         .route("/v1/messages", post(messages))
         .route("/v1/messages/count_tokens", post(count_tokens))
+        .layer(DefaultBodyLimit::max(body_limit))
         .layer(middleware::from_fn(trace_requests))
         .with_state(state);
 
@@ -95,7 +101,10 @@ fn require_env(key: &str) -> String {
 /// (litellm) sets `VLLM_URL` *with* a `/v1` suffix; we append `/v1/chat/completions` and `/tokenize`
 /// ourselves, so accept either form and avoid a `/v1/v1/...` at cutover (PLAN.md §0a #2).
 fn normalize_vllm_url(raw: &str) -> String {
-    raw.trim_end_matches('/').trim_end_matches("/v1").trim_end_matches('/').to_string()
+    raw.trim_end_matches('/')
+        .trim_end_matches("/v1")
+        .trim_end_matches('/')
+        .to_string()
 }
 
 /// Per-request access log + correlation id. Wraps each request in a span carrying a generated
@@ -111,7 +120,11 @@ async fn trace_requests(req: Request, next: Next) -> Response {
     let start = Instant::now();
     let mut resp = next.run(req).instrument(span.clone()).await;
     span.in_scope(|| {
-        tracing::info!(status = resp.status().as_u16(), latency_ms = start.elapsed().as_millis() as u64, "handled");
+        tracing::info!(
+            status = resp.status().as_u16(),
+            latency_ms = start.elapsed().as_millis() as u64,
+            "handled"
+        );
     });
     if let Ok(v) = HeaderValue::from_str(&id) {
         resp.headers_mut().insert("x-request-id", v);
@@ -130,7 +143,14 @@ async fn messages(
     let oai = translate::to_openai(req, state.vllm_model.clone());
 
     if streaming {
-        return stream::stream(state.client, state.vllm_url, state.vllm_model, oai, thinking).await;
+        return stream::stream(
+            state.client,
+            state.vllm_url,
+            state.vllm_model,
+            oai,
+            thinking,
+        )
+        .await;
     }
 
     let resp = state
@@ -190,10 +210,10 @@ async fn count_tokens(
 /// non-sensitive — upstream bodies are never echoed or logged (§5d).
 #[derive(Debug)]
 pub enum ProxyError {
-    BadRequest(&'static str),  // 400 invalid_request_error
-    Upstream(&'static str),    // 502 api_error (connect/DNS/TLS/5xx/decode)
-    Timeout,                   // 504 api_error
-    RateLimited,               // 429 rate_limit_error
+    BadRequest(&'static str), // 400 invalid_request_error
+    Upstream(&'static str),   // 502 api_error (connect/DNS/TLS/5xx/decode)
+    Timeout,                  // 504 api_error
+    RateLimited,              // 429 rate_limit_error
 }
 
 impl ProxyError {
@@ -219,8 +239,16 @@ impl ProxyError {
         match self {
             ProxyError::BadRequest(m) => (StatusCode::BAD_REQUEST, "invalid_request_error", m),
             ProxyError::Upstream(m) => (StatusCode::BAD_GATEWAY, "api_error", m),
-            ProxyError::Timeout => (StatusCode::GATEWAY_TIMEOUT, "api_error", "upstream request timed out"),
-            ProxyError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limit_error", "upstream rate limited"),
+            ProxyError::Timeout => (
+                StatusCode::GATEWAY_TIMEOUT,
+                "api_error",
+                "upstream request timed out",
+            ),
+            ProxyError::RateLimited => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limit_error",
+                "upstream rate limited",
+            ),
         }
     }
 }
@@ -233,7 +261,11 @@ impl IntoResponse for ProxyError {
         } else {
             tracing::error!(status = status.as_u16(), kind, message, "proxy error");
         }
-        (status, Json(json!({ "type": "error", "error": { "type": kind, "message": message } }))).into_response()
+        (
+            status,
+            Json(json!({ "type": "error", "error": { "type": kind, "message": message } })),
+        )
+            .into_response()
     }
 }
 
@@ -244,7 +276,12 @@ mod tests {
     #[test]
     fn normalize_vllm_url_accepts_root_and_v1_forms() {
         let want = "http://10.0.0.13:8000";
-        for input in ["http://10.0.0.13:8000", "http://10.0.0.13:8000/", "http://10.0.0.13:8000/v1", "http://10.0.0.13:8000/v1/"] {
+        for input in [
+            "http://10.0.0.13:8000",
+            "http://10.0.0.13:8000/",
+            "http://10.0.0.13:8000/v1",
+            "http://10.0.0.13:8000/v1/",
+        ] {
             assert_eq!(normalize_vllm_url(input), want, "input: {input}");
         }
     }

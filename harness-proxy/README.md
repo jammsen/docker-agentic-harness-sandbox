@@ -73,6 +73,8 @@ service `harness-proxy`):
 | `VLLM_URL` | **yes** | Base URL of the OpenAI-compatible server, e.g. `http://10.0.0.13:8000` |
 | `VLLM_MODEL` | **yes** | Upstream model id every request is forced to, e.g. `qwen3.6-35b` |
 | `HARNESS_PROXY_BIND` | no (default `0.0.0.0:4000`) | Listen address |
+| `HARNESS_PROXY_TIMEOUT_SECS` | no (default `600`) | Non-streaming upstream request timeout |
+| `HARNESS_PROXY_BODY_LIMIT_BYTES` | no (default `33554432`) | Maximum accepted Anthropic request body size |
 
 `VLLM_URL` / `VLLM_MODEL` are deployment-specific and **not** baked into the
 binary — the process refuses to start if either is missing.
