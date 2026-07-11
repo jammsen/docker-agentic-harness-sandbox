@@ -375,10 +375,8 @@ mod tests {
         );
         let text: String = payloads
             .iter()
-            .filter_map(|p| {
-                (p["type"] == "content_block_delta")
-                    .then(|| p["delta"]["text"].as_str().unwrap_or(""))
-            })
+            .filter(|p| p["type"] == "content_block_delta")
+            .map(|p| p["delta"]["text"].as_str().unwrap_or(""))
             .collect();
         assert_eq!(text, "Hi there");
     }
@@ -416,10 +414,8 @@ mod tests {
         assert_eq!(start["content_block"]["name"], "get_weather");
         let args: String = payloads
             .iter()
-            .filter_map(|p| {
-                (p["delta"]["type"] == "input_json_delta")
-                    .then(|| p["delta"]["partial_json"].as_str().unwrap())
-            })
+            .filter(|p| p["delta"]["type"] == "input_json_delta")
+            .map(|p| p["delta"]["partial_json"].as_str().unwrap())
             .collect();
         assert_eq!(args, r#"{"city":"Paris"}"#);
         let md = payloads

@@ -91,7 +91,7 @@ fn push_blocks(out: &mut Vec<ChatMessage>, role: &str, blocks: Vec<ContentBlock>
         if !text.is_empty() || !tool_calls.is_empty() {
             out.push(ChatMessage {
                 role: "assistant".into(),
-                content: (!text.is_empty()).then(|| MessageContent::Text(text)),
+                content: (!text.is_empty()).then_some(MessageContent::Text(text)),
                 tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
                 tool_call_id: None,
             });
