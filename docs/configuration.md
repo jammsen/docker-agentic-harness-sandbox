@@ -66,3 +66,30 @@ The first entry is the default. `DEFAULT_TOOL` is normally empty and is filled b
 | `data/` | persistent tool sessions and state |
 
 Change host-side port mappings in `compose.yml` if these ports conflict with other services.
+
+## Context and output limits
+
+Do not copy a model's marketing context size blindly. Query `/v1/models`, then configure a context limit no larger than the server actually exposes. Reserve enough room for output tokens and tool results.
+
+OpenCode uses the `limit.context`, `limit.output`, and agent `maxTokens` values in `opencode.json`. OMP uses `contextWindow`, `maxTokens`, and the summarization thresholds in `config.yml`. If requests stall late in a long session, reduce the configured working context or move OMP's `summarizeAt` threshold earlier.
+
+## Python build argument
+
+The sandbox installs Python through `uv`. Change the version in the sandbox build arguments:
+
+```yaml
+services:
+  sandbox:
+    build:
+      context: .
+      args:
+        PYTHON_VERSION: "3.12"
+```
+
+Then rebuild the affected layers:
+
+```bash
+./start.sh --no-cache
+```
+
+Choose a version supported by `uv`. Changing the argument invalidates the Docker cache from the Python installation layer onward.

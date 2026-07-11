@@ -44,7 +44,30 @@ docker compose ps
 docker compose logs -f
 ```
 
-Inside OpenCode, run `/model`. In OMP, run `omp status`. For Claude Code, send a short prompt and inspect `docker compose logs litellm` if the request fails.
+### OpenCode
+
+Inside the OpenCode TUI:
+
+1. Run `/model` and confirm the configured model appears under the `vllm` provider.
+2. Ask `What model are you?` and compare the response with the ID returned by `/v1/models`.
+3. Check that the status bar shows the expected model.
+4. Confirm the spending indicator remains `$0.00`; the configured provider should not call a paid cloud API.
+
+### OMP
+
+1. Run `omp status` and confirm the `vllm` provider and expected model.
+2. Send a short prompt and verify that it completes.
+3. If it does not, compare `config/omp/models.yml` with the server's `/v1/models` response.
+
+### Claude Code
+
+Send a short prompt, then inspect the translation services if it fails:
+
+```bash
+docker compose logs sandbox litellm
+```
+
+Claude Code uses Anthropic model aliases locally, so its displayed alias can differ from the backend vLLM model ID. `config/litellm-config.yaml` is the authoritative mapping.
 
 ## Stop the stack
 
