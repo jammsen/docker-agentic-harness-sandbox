@@ -16,3 +16,7 @@ workspace/uploads/*
 !workspace/uploads/.gitkeep
 
 .DS_Store
+node_modules/
+build/
+.docusaurus/
+.cache-loader/

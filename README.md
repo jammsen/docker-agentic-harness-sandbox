@@ -1,5 +1,7 @@
 # A hardened Docker harness for agentic coding tools
 
+> Full setup, configuration, usage, architecture, security, and troubleshooting documentation is available in the [Docusaurus documentation site](https://jammsen.github.io/docker-agentic-harness-sandbox/).
+
 Run agentic coding tools — OpenCode, OMP, and more — inside a single hardened Docker container with a **browser-based terminal** (WeTTY over HTTPS). Connect to a self-hosted vLLM inference server or any OpenAI-compatible API. No cloud API keys required.
 
 Access the terminal from any browser — desktop or mobile — at `https://<host>:1111`. GNU screen keeps the agent session alive across reconnects: close the tab, come back later, reattach.
