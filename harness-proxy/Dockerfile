@@ -37,13 +37,22 @@ WORKDIR /build
 # ponytail: skip the cargo-chef/dummy-main dep-caching dance — copy sources and build once.
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+ARG HARNESS_PROXY_VERSION
 RUN set -eux; TRIPLE="$(cat /triple)"; \
+    CARGO_VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"; \
+    test -n "$HARNESS_PROXY_VERSION"; \
+    test "$HARNESS_PROXY_VERSION" = "$CARGO_VERSION"; \
     cargo build --locked --release --target "$TRIPLE"; \
     cp "target/$TRIPLE/release/harness-proxy" /harness-proxy
 
 # Final: scratch + the static binary only, running as a non-root numeric UID.
 FROM scratch
+ARG HARNESS_PROXY_VERSION
+LABEL org.opencontainers.image.title="harness-proxy" \
+      org.opencontainers.image.version="$HARNESS_PROXY_VERSION" \
+      org.opencontainers.image.description="Anthropic Messages to OpenAI/vLLM translating proxy"
 COPY --from=builder /harness-proxy /harness-proxy
 USER 65532:65532
 EXPOSE 4000
+STOPSIGNAL SIGTERM
 ENTRYPOINT ["/harness-proxy"]

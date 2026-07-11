@@ -56,9 +56,10 @@ has been **rebased onto `main`** — see §0a for the main-side deltas to accoun
   (returned the file's secret), `count_tokens`, and the **image-in-`tool_result` hoist** — the
   vision model answered "Red" both by curl and through `claude -p` reading a PNG. Scratch image still
   builds.
-- **✅ Blocker resolved (was §2): vLLM emits standard OpenAI `tool_calls`** (`finish_reason:tool_calls`,
-  `message.tool_calls[].function.{name,arguments}`) — the `hermes` path the PLAN predicted, confirmed
-  empirically. No text-template parsing needed.
+- **✅ Blocker resolved (was §2): vLLM emits standard OpenAI `tool_calls`**
+  (`message.tool_calls[].function.{name,arguments}`). The currently deployed vLLM 0.23.0 reports
+  `finish_reason:stop` even when that payload is present, so the proxy treats the tool payload as
+  authoritative and emits Anthropic `stop_reason:tool_use`. No text-template parsing is needed.
 - ✅ **Step 6 done**: production logging & error handling (§5d). Added `tracing` +
   `tracing-subscriber` (stderr, `RUST_LOG` default info). A `from_fn` middleware wraps each request
   in a span with a generated **`req-XXXXXXXX` id**, echoes it as **`x-request-id`**, and logs one
@@ -71,9 +72,19 @@ has been **rebased onto `main`** — see §0a for the main-side deltas to accoun
   one). **Verified live:**
   malformed→400, dead upstream→502, hung upstream→504 (~2s with the cap), happy path 200 — all with a
   correlated request id and no content in the logs.
+- ✅ **Post-merge hardening re-verified live (2026-07-11):** 17/17 tests plus formatting and strict
+  Clippy; static image rebuilt; real vLLM passed normal/streaming messages, thinking, tool calls and
+  complete tool-result continuation, `/tokenize`, and nested `tool_result` vision using
+  `tests/fixtures/vision-test-7319.png`. Startup logs now reduce `VLLM_URL` to scheme/host/port,
+  token fallback logs a safe reason, and mid-stream failures log inside the correlated request span.
+  Fake prompt/header/URL/query secret sentinels were confirmed absent from container logs.
+- ✅ **Container lifecycle hardening verified (2026-07-11):** the image declares `SIGTERM`; the
+  binary handles `SIGTERM`/`SIGINT` as PID 1 and asks Axum to drain connections. Idle shutdown exits
+  cleanly in ~0.1s. A deliberately long real-vLLM SSE request hit the configurable 8s drain bound,
+  logged the forced connection close, and still exited `0` before Docker's 10s kill deadline.
 - **Wiring:** proxy is NOT yet in Claude's path. Sandbox still uses litellm + `claude-shim.js`.
-  Compose runs the proxy standalone (`agentic-harness-proxy`, bind `0.0.0.0:4000`, no published
-  ports) so it doesn't interfere. Cutover is Step 7.
+  Root Compose contains a fully prepared but commented-out standalone service definition, so it
+  cannot interfere before cutover. Cutover is Step 7.
 - **➡️ Next: Step 7 (final)** — cutover: remove litellm + claude-shim, point `ANTHROPIC_BASE_URL` at
   the proxy, wire it into `entrypoint.sh`/`compose.yml`. See §0a for the main-side deltas first.
 
@@ -89,7 +100,7 @@ just add services). **Concept still holds — vLLM re-verified live (2026-06-28)
 |---|---|
 | reasoning field, non-stream | `message.reasoning` (✅ matches `openai.rs` — **not** `reasoning_content`) |
 | reasoning field, stream | `delta.reasoning` (✅ matches `stream.rs`) |
-| tool calls | native OpenAI `tool_calls`, `finish_reason:tool_calls` (✅ 1:1, no text parsing) |
+| tool calls | native OpenAI `tool_calls`; vLLM 0.23.0 uses `finish_reason:stop`, which the proxy overrides to Anthropic `tool_use` (✅ no text parsing) |
 
 **What `main` changed that the cutover must honor:**
 1. **Thinking is now ON end-to-end.** `config/claude/settings.json` flipped `MAX_THINKING_TOKENS`
@@ -143,10 +154,11 @@ litellm:4000). Final step re-points `ANTHROPIC_BASE_URL` → `http://127.0.0.1:4
 
 ## 2. ✅ RESOLVED blocker (was: gates tool-call work)
 
-**Confirmed empirically (2026-06-26):** the live vLLM at `10.0.0.13:8000` returns **standard OpenAI
-`tool_calls`** with `finish_reason:tool_calls` for a normal tools request — the `hermes`/auto-tool-choice
-path below. The proxy's 1:1 tool translation works (verified non-stream + streaming + via `claude` CLI).
-No text-template parsing needed; the jammsen question is moot. Original note kept for context:
+**Confirmed empirically and re-verified 2026-07-11:** the live vLLM at `10.0.0.13:8000` returns
+**standard OpenAI `tool_calls`**. vLLM 0.23.0 now accompanies them with `finish_reason:stop`; the proxy
+infers Anthropic `stop_reason:tool_use` from the payload in both non-streaming and streaming paths.
+The 1:1 tool translation and complete tool-result continuation work. No text-template parsing is
+needed; the original note is kept for context:
 
 **How is our vLLM launched re: tool calls?** Asked on issue #10, waiting on @jammsen.
 - vLLM needs `--enable-auto-tool-choice --tool-call-parser <name>` to emit tool calls. Per the vLLM
@@ -253,7 +265,8 @@ Headers: pass through, force the upstream model to `VLLM_MODEL`, send `Authoriza
 ### 5b. Response (non-streaming): OpenAI → Anthropic
 - `choices[0].message.content` → Anthropic `content: [{type:text}]`.
 - `choices[0].message.tool_calls` → Anthropic `tool_use` blocks (`input` = parsed JSON of `arguments`).
-- `finish_reason` → `stop_reason`: `stop`→`end_turn`, `length`→`max_tokens`, `tool_calls`→`tool_use`.
+- `finish_reason` → `stop_reason`: `stop`→`end_turn`, `length`→`max_tokens`, `tool_calls`→`tool_use`;
+  if a tool-call payload exists it always wins and maps to `tool_use` (vLLM 0.23 compatibility).
 - `usage.prompt_tokens`/`completion_tokens` → `usage.input_tokens`/`output_tokens`.
 
 ### 5c. Response (streaming): OpenAI `chat.completion.chunk` SSE → Anthropic Messages SSE

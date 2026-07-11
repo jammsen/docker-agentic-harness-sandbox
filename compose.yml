@@ -94,30 +94,30 @@ services:
     volumes:
       - valkey-data:/data
 
-  # harness-proxy — Rust replacement for litellm + claude-shim.js (issue #10).
-  # Translates Anthropic Messages to vLLM/OpenAI, including streaming, images, tools and token counts.
-  # NOT yet wired in: sandbox cutover still has to point ANTHROPIC_BASE_URL at this proxy
-  # and remove the litellm/shim request path in PLAN.md Step 7.
-  harness-proxy:
-    build:
-      context: ./harness-proxy
-    container_name: agentic-harness-proxy
-    environment:
-      - HARNESS_PROXY_BIND=0.0.0.0:4000           # bind for standalone container (network-reachable)
-      - VLLM_URL=${VLLM_URL:-http://10.0.0.13:8000/v1} # shared override; proxy normalizes trailing /v1
-      - VLLM_MODEL=qwen3.6-35b
-    # No published ports — only reachable on the internal docker network, like litellm.
-    # vLLM (10.0.0.13) is a routable LAN IP, so no extra_hosts/host-gateway needed.
-    init: true                                    # tini as PID 1 — reaps the process cleanly
-    restart: unless-stopped
-    read_only: true                               # static binary writes nothing to disk
-    user: "65532:65532"                           # non-root (also baked into the image)
-    security_opt:
-      - no-new-privileges:true                    # no privilege escalation
-    cap_drop:
-      - ALL                                       # drop every Linux capability
-    pids_limit: 64                                # cap fork bombs
-    mem_limit: 128m                               # tiny proxy — hard ceiling
+  # Prepared replacement for litellm + claude-shim.js (issue #10, implementation merged in PR #15).
+  # Keep this service commented out until the Step 7 topology decision and in-sandbox verification
+  # are complete. For the separate-service topology, uncomment this block and point Claude's
+  # ANTHROPIC_BASE_URL at http://harness-proxy:4000 before removing the old request path.
+  # harness-proxy:
+  #   # Build with ./harness-proxy/build-image.sh so the OCI version label comes from Cargo.toml.
+  #   image: harness-proxy:local
+  #   container_name: agentic-harness-proxy
+  #   environment:
+  #     - HARNESS_PROXY_BIND=0.0.0.0:4000           # bind for standalone container (network-reachable)
+  #     - VLLM_URL=${VLLM_URL:-http://10.0.0.13:8000/v1} # shared override; proxy normalizes trailing /v1
+  #     - VLLM_MODEL=qwen3.6-35b
+  #   # No published ports — only reachable on the internal Docker network, like litellm.
+  #   # vLLM (10.0.0.13) is a routable LAN IP, so no extra_hosts/host-gateway is needed.
+  #   init: true                                    # tini as PID 1 — reaps the process cleanly
+  #   restart: unless-stopped
+  #   read_only: true                               # static binary writes nothing to disk
+  #   user: "65532:65532"                           # non-root (also baked into the image)
+  #   security_opt:
+  #     - no-new-privileges:true                    # no privilege escalation
+  #   cap_drop:
+  #     - ALL                                       # drop every Linux capability
+  #   pids_limit: 64                                # cap fork bombs
+  #   mem_limit: 128m                               # tiny proxy — hard ceiling
 
   litellm:
     image: ghcr.io/berriai/litellm:v1.89.3        # latest stable as of 2026-06-22; post-attack (1.82.7/1.82.8 were the compromised PyPI versions)

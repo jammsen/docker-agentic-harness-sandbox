@@ -267,6 +267,7 @@ pub fn to_anthropic(
     if let Some(t) = msg.content.filter(|t| !t.is_empty()) {
         content.push(OutputBlock::Text { text: t });
     }
+    let has_tool_calls = !msg.tool_calls.is_empty();
     for (idx, tc) in msg.tool_calls.into_iter().enumerate() {
         let name = tc.function.name.filter(|n| !n.trim().is_empty()).ok_or(
             crate::ProxyError::Upstream("upstream returned malformed tool_call name"),
@@ -306,7 +307,13 @@ pub fn to_anthropic(
         role: "assistant",
         model,
         content,
-        stop_reason: stop_reason(finish.as_deref()),
+        // vLLM 0.23 can emit valid tool_calls with finish_reason="stop". Anthropic clients use
+        // stop_reason="tool_use" to continue the agent loop, so the payload is authoritative.
+        stop_reason: if has_tool_calls {
+            "tool_use".to_string()
+        } else {
+            stop_reason(finish.as_deref())
+        },
         stop_sequence: None,
         usage: anthropic::Usage {
             input_tokens: usage.prompt_tokens,
@@ -429,6 +436,30 @@ mod tests {
         assert_eq!(v["type"], "tool_use");
         assert_eq!(v["name"], "f");
         assert_eq!(v["input"]["x"], 1);
+    }
+
+    #[test]
+    fn tool_payload_overrides_vllm_stop_finish_reason() {
+        let resp: ChatResponse = serde_json::from_value(json!({
+            "id": "cmpl-live-shape",
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "function": { "name": "get_weather", "arguments": "{\"city\":\"Berlin\"}" }
+                    }]
+                },
+                "finish_reason": "stop"
+            }]
+        }))
+        .unwrap();
+
+        let a = to_anthropic(resp, "m".to_string(), false).unwrap();
+        assert_eq!(a.stop_reason, "tool_use");
+        assert_eq!(
+            serde_json::to_value(&a.content[0]).unwrap()["type"],
+            "tool_use"
+        );
     }
 
     #[test]

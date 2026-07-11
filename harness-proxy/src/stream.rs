@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::convert::Infallible;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
+use tracing::Instrument;
 
 use crate::ProxyError;
 use crate::anthropic::SYNTHETIC_SIGNATURE;
@@ -47,7 +48,7 @@ pub async fn stream(
     }
 
     let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(32);
-    tokio::spawn(pump(resp, model, thinking, tx));
+    tokio::spawn(pump(resp, model, thinking, tx).instrument(tracing::Span::current()));
 
     Ok(Sse::new(ReceiverStream::new(rx)).into_response())
 }
@@ -124,6 +125,7 @@ struct Translator {
     next_index: i32,
     open: Open,
     tools: BTreeMap<u32, i32>, // OpenAI tool_calls index -> Anthropic content block index
+    saw_tool_call: bool,
     stop_reason: String,
     output_tokens: u32,
     msg_id: String,
@@ -138,6 +140,7 @@ impl Translator {
             next_index: 0,
             open: Open::None,
             tools: BTreeMap::new(),
+            saw_tool_call: false,
             stop_reason: "end_turn".to_string(),
             output_tokens: 0,
             msg_id: "msg_proxy".to_string(),
@@ -161,7 +164,9 @@ impl Translator {
 
         for choice in c.choices {
             if let Some(fr) = choice.finish_reason {
-                self.stop_reason = crate::translate::stop_reason(Some(&fr));
+                if !self.saw_tool_call {
+                    self.stop_reason = crate::translate::stop_reason(Some(&fr));
+                }
             }
             let d = choice.delta;
 
@@ -190,6 +195,10 @@ impl Translator {
             }
 
             for tc in d.tool_calls {
+                // The tool payload wins over vLLM's finish reason. Current vLLM can send a final
+                // finish_reason="stop" even though earlier chunks contain native tool_calls.
+                self.saw_tool_call = true;
+                self.stop_reason = "tool_use".to_string();
                 let i = if let Some(i) = self.tools.get(&tc.index) {
                     *i
                 } else {
@@ -320,6 +329,7 @@ fn event(name: &str, data: Value) -> Event {
 /// Emit an Anthropic-style `error` event and end the stream (no message_stop). Used when the
 /// upstream stream breaks mid-flight so a truncation can't masquerade as a clean completion.
 async fn send_error(tx: &mpsc::Sender<Result<Event, Infallible>>, message: &str) {
+    tracing::error!(reason = message, "upstream stream failed");
     let payload = json!({"type":"error","error":{"type":"api_error","message":message}});
     let _ = tx.send(Ok(event("error", payload))).await;
 }
@@ -418,6 +428,26 @@ mod tests {
             .map(|p| p["delta"]["partial_json"].as_str().unwrap())
             .collect();
         assert_eq!(args, r#"{"city":"Paris"}"#);
+        let md = payloads
+            .iter()
+            .find(|p| p["type"] == "message_delta")
+            .unwrap();
+        assert_eq!(md["delta"]["stop_reason"], "tool_use");
+    }
+
+    #[test]
+    fn streamed_tool_payload_overrides_vllm_stop_finish_reason() {
+        let (_, payloads) = run(
+            false,
+            vec![
+                json!({"choices":[{"delta":{"tool_calls":[{
+                    "index":0,
+                    "id":"call_1",
+                    "function":{"name":"get_weather","arguments":"{\"city\":\"Berlin\"}"}
+                }]}}]}),
+                json!({"choices":[{"delta":{},"finish_reason":"stop"}]}),
+            ],
+        );
         let md = payloads
             .iter()
             .find(|p| p["type"] == "message_delta")

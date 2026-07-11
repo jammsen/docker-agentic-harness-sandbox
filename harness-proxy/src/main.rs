@@ -30,6 +30,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 // makes non-stream replies longer, so a tighter cap would 504 legitimate generations (PLAN.md §0a #3).
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 600;
 const DEFAULT_BODY_LIMIT_BYTES: usize = 32 * 1024 * 1024;
+// Stay below Docker's default 10-second stop timeout so a stuck SSE client cannot force SIGKILL.
+const DEFAULT_SHUTDOWN_TIMEOUT_SECS: u64 = 8;
 
 #[derive(Clone)]
 struct AppState {
@@ -67,6 +69,12 @@ async fn main() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_BODY_LIMIT_BYTES);
+    let shutdown_timeout = Duration::from_secs(
+        env::var("HARNESS_PROXY_SHUTDOWN_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_SHUTDOWN_TIMEOUT_SECS),
+    );
 
     let state = AppState {
         client: reqwest::Client::builder()
@@ -89,8 +97,59 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .unwrap_or_else(|e| panic!("harness-proxy: cannot bind {bind}: {e}"));
-    tracing::info!(%bind, vllm_url, vllm_model, "harness-proxy listening");
-    axum::serve(listener, app).await.expect("server error");
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        %bind,
+        vllm_endpoint = %safe_endpoint(&vllm_url),
+        vllm_model,
+        "harness-proxy listening"
+    );
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let server = axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.await;
+        })
+        .into_future();
+    tokio::pin!(server);
+
+    tokio::select! {
+        result = &mut server => result.expect("server error"),
+        () = shutdown_signal() => {
+            let _ = shutdown_tx.send(());
+            match tokio::time::timeout(shutdown_timeout, &mut server).await {
+                Ok(result) => result.expect("server error during shutdown"),
+                Err(_) => tracing::warn!(
+                    timeout_secs = shutdown_timeout.as_secs(),
+                    "shutdown drain timed out; closing remaining connections"
+                ),
+            }
+        }
+    }
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), "harness-proxy stopped");
+}
+
+/// Docker/OCI sends SIGTERM for a normal stop; SIGINT keeps local foreground runs ergonomic.
+/// Axum stops accepting new connections and waits for active connections to finish.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut terminate = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+        let mut interrupt = signal(SignalKind::interrupt()).expect("install SIGINT handler");
+        tokio::select! {
+            _ = terminate.recv() => tracing::info!(signal = "SIGTERM", "shutdown requested"),
+            _ = interrupt.recv() => tracing::info!(signal = "SIGINT", "shutdown requested"),
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("install Ctrl-C handler");
+        tracing::info!(signal = "CTRL_C", "shutdown requested");
+    }
 }
 
 fn require_env(key: &str) -> String {
@@ -105,6 +164,26 @@ fn normalize_vllm_url(raw: &str) -> String {
         .trim_end_matches("/v1")
         .trim_end_matches('/')
         .to_string()
+}
+
+/// Render only the upstream origin for logs. Userinfo, path, query and fragment may contain
+/// credentials or deployment details and must never reach stderr.
+fn safe_endpoint(raw: &str) -> String {
+    let Ok(url) = reqwest::Url::parse(raw) else {
+        return "<invalid-url>".to_string();
+    };
+    let Some(host) = url.host_str() else {
+        return "<invalid-url>".to_string();
+    };
+    let host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    match url.port() {
+        Some(port) => format!("{}://{}:{port}", url.scheme(), host),
+        None => format!("{}://{}", url.scheme(), host),
+    }
 }
 
 /// Per-request access log + correlation id. Wraps each request in a span carrying a generated
@@ -194,13 +273,38 @@ async fn count_tokens(
         .send()
         .await
     {
-        Ok(r) if r.status().is_success() => r
-            .json::<Value>()
-            .await
-            .ok()
-            .and_then(|v| v.get("count").and_then(Value::as_u64))
-            .unwrap_or(approx),
-        _ => approx, // tokenize unavailable -> estimate is spec-compliant
+        Ok(r) if r.status().is_success() => match r.json::<Value>().await {
+            Ok(v) => match v.get("count").and_then(Value::as_u64) {
+                Some(count) => count,
+                None => {
+                    tracing::warn!(reason = "missing_count", "tokenize fallback");
+                    approx
+                }
+            },
+            Err(_) => {
+                tracing::warn!(reason = "decode", "tokenize fallback");
+                approx
+            }
+        },
+        Ok(r) => {
+            tracing::warn!(
+                reason = "upstream_status",
+                upstream_status = r.status().as_u16(),
+                "tokenize fallback"
+            );
+            approx
+        }
+        Err(e) => {
+            tracing::warn!(
+                reason = if e.is_timeout() {
+                    "timeout"
+                } else {
+                    "transport"
+                },
+                "tokenize fallback"
+            );
+            approx
+        }
     };
     Ok(Json(json!({ "input_tokens": count })))
 }
@@ -271,7 +375,7 @@ impl IntoResponse for ProxyError {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_vllm_url;
+    use super::{normalize_vllm_url, safe_endpoint};
 
     #[test]
     fn normalize_vllm_url_accepts_root_and_v1_forms() {
@@ -284,5 +388,14 @@ mod tests {
         ] {
             assert_eq!(normalize_vllm_url(input), want, "input: {input}");
         }
+    }
+
+    #[test]
+    fn safe_endpoint_drops_credentials_path_and_query() {
+        assert_eq!(
+            safe_endpoint("https://api-user:super-secret@example.test:8443/private/v1?key=hidden"),
+            "https://example.test:8443"
+        );
+        assert_eq!(safe_endpoint("not a url"), "<invalid-url>");
     }
 }
