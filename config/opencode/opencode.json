@@ -5,14 +5,33 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "vLLM",
       "options": {
-        "baseURL": "http://10.0.0.13:8000/v1"
+        "baseURL": "${MODEL_URL}"
       },
       "models": {
-        "qwen3.6-35b": {
-          "name": "Qwen3.6 35B A3B",
+        "${MODEL_ID}": {
+          "name": "${MODEL_NAME}",
           "limit": {
-            "context": 120000,
-            "output": 16384
+            "context": ${MODEL_CONTEXT},
+            "output": ${MODEL_MAX_TOKENS}
+          },
+          "options": {
+            "preserve_thinking": false
+          }
+        }
+      }
+    },
+    "vision": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Vision",
+      "options": {
+        "baseURL": "${VISION_MODEL_URL}"
+      },
+      "models": {
+        "${VISION_MODEL_ID}": {
+          "name": "${VISION_MODEL_NAME}",
+          "limit": {
+            "context": ${VISION_MODEL_CONTEXT},
+            "output": ${VISION_MODEL_MAX_TOKENS}
           },
           "options": {
             "preserve_thinking": false
@@ -21,7 +40,7 @@
       }
     }
   },
-  "model": "vllm/qwen3.6-35b",
+  "model": "vllm/${MODEL_ID}",
   "autoshare": false,
   "mcp": {
     "searxng": {
@@ -42,7 +61,7 @@
         "webfetch": "ask",
         "websearch": "allow"
       },
-      "maxTokens": 16384
+      "maxTokens": ${MODEL_MAX_TOKENS}
     }
   }
 }

@@ -8,6 +8,10 @@ When starting work in an existing project directory, check whether WORKLOG.md ex
   TZ=Europe/Berlin date "+%d.%m.%Y, %H:%M (%Z)"
 Include: changed files, concrete findings, and pending follow-ups.
 
+## Code style
+
+- Keep comments concise and relevant. Avoid over-commenting or stating the obvious. Focus on explaining the "why" rather than the "what" when the code is not self-explanatory.
+
 ## Running Background Servers
 
 Port **3000** is the externally reachable port for agent-hosted servers. Ports 1111 and 1112 are reserved (WeTTY terminal, image upload). Bind servers to 0.0.0.0:3000.

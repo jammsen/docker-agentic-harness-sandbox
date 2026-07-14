@@ -40,39 +40,48 @@ A companion **image upload page** runs on `https://<host>:1112`. Paste a screens
 ## Prerequisites
 
 - Docker + Docker Compose installed on your machine
-- Access to a running vLLM server exposing an OpenAI-compatible API (e.g. `http://10.0.0.13:8000`)
-- Your vLLM server must have the model loaded and `/v1/models` responding
+- Access to a running inference server exposing an OpenAI-compatible API (vLLM, llama.cpp, SGLang, DGX Spark stacks, ...)
+- The server must have the model loaded and `/v1/models` responding
 
-> **How this works:** The agent tools running inside the container are clients to your external vLLM server. They have no direct access to the model weights — all inference goes through the API endpoint. If a tool ever needs to identify which model it is using, it must look it up via the API or a web search based on the model ID configured in `config/opencode/opencode.json` / `config/omp/models.yml`.
+> **How this works:** The agent tools running inside the container are clients to your external inference server. They have no direct access to the model weights — all inference goes through the API endpoint. If a tool ever needs to identify which model it is using, it must look it up via the API or a web search based on the model ID configured via `MODEL_ID` in `.env` / `compose.yml`.
 
-### Configuring your vLLM address
+### Configuring your models
 
-All services that talk to vLLM read their endpoint from the `VLLM_URL` environment variable. The default in `compose.yml` is `http://10.0.0.13:8000/v1` — change it to match your setup by setting the variable in your shell before running any compose command:
-
-```bash
-export VLLM_URL=http://<your-vllm-ip>:8000/v1
-```
-
-Or set it inline for a one-off run:
+All model settings live in one place: the `x-model-env` block at the top of `compose.yml`. Set the variables in a `.env` file next to `compose.yml` (copy `.env.example`) — docker compose picks it up automatically, no shell exports needed. Every tool config (opencode, OMP, LiteLLM) is a template that gets rendered from these variables at container start; there is nothing to hand-edit in `config/` anymore.
 
 ```bash
-VLLM_URL=http://192.168.1.50:8000/v1 ./start.sh
+cp .env.example .env
+# then edit .env:
+MODEL_URL=http://<your-server-ip>:8000/v1   # OpenAI-compatible API base, incl. /v1
+MODEL_ID=<model-id>                         # exact "id" from GET $MODEL_URL/models
+MODEL_NAME=<display name>                   # shown in the tool pickers
+MODEL_CONTEXT=120000                        # from max_model_len in /v1/models
+MODEL_MAX_TOKENS=16384
 ```
 
-`VLLM_URL` must include the `/v1` path. It is passed automatically to both the `sandbox` and `litellm` services — you only need to set it in one place.
-
-Verify your vLLM is reachable before starting:
+**Dual-model setups — text-only brains with a vision fallback.** This is the default: DeepSeek V4 Flash as the primary (`MODEL_VISION=false`) with Qwen3.6 35B handling image requests via the `VISION_MODEL_*` variables:
 
 ```bash
-curl $VLLM_URL/models
+MODEL_VISION=false
+VISION_MODEL_URL=http://<vision-host>:8000/v1
+VISION_MODEL_ID=qwen3.6-35b
 ```
 
-You should see your model ID in the response (e.g. `qwen3.6-35b`).
+What that does:
 
-Use the exact `"id"` value from the response — e.g. `qwen3.6-35b`.
+- **Claude Code**: `claude-shim` automatically reroutes any request that carries an image to the vision model — the primary answers everything else. You can also switch a whole session manually with `/model vision`.
+- **opencode / OMP**: both models appear in the model picker (`vllm/...` and `vision/...`); switch manually when working with images.
+- **`analyze-image`**: always uses the vision model.
 
-**Finding your context size:**
-The `max_model_len` field in the `/v1/models` response is your context limit. Use that value for `"context"`.
+For single-model setups (a vision-capable primary), set `MODEL_VISION=true` and point `VISION_MODEL_*` at the same endpoint — see the example in `.env.example`.
+
+Verify your server is reachable before starting:
+
+```bash
+curl $MODEL_URL/models
+```
+
+Use the exact `"id"` value from the response for `MODEL_ID`, and the `max_model_len` field for `MODEL_CONTEXT`.
 
 ---
 
@@ -85,20 +94,34 @@ docker-agentic-harness-sandbox/
 ├── Dockerfile
 ├── compose.yml             ← defines the `sandbox`, `litellm` and `harness-proxy` services
 ├── start.sh
+├── includes/               ← entrypoint function library, one file per concern (sourced from /includes/ at start)
+│   ├── colors.sh           ← colorful echo helpers (e/ei/ew/ee/es) shared by all shell scripts
+│   ├── security.sh         ← root requirement + PUID/PGID validation
+│   ├── model.sh            ← MODEL_*/VISION_MODEL_* validation and vision-from-primary derivation
+│   ├── user.sh             ← agent user/group creation, UID/GID realignment, ownership fixes
+│   ├── config.sh           ← Claude config sync, model-template rendering (envsubst), opencode auth link
+│   ├── tools.sh            ← workspace check + agent-tool discovery/validation (TOOLS, DEFAULT_TOOL)
+│   └── services.sh         ← process supervisor + upload server, claude-shim and WeTTY startup
 ├── scripts/                ← runtime + maintenance scripts (baked into the image)
-│   ├── entrypoint.sh       ← container startup: user setup, launches WeTTY + upload server + shim
+│   ├── entrypoint.sh       ← container startup manager: sources includes/, runs setup, execs WeTTY
 │   ├── agent-session.sh    ← per-browser-connection: privilege drop, screen session, tool selection
 │   ├── agent-task.sh       ← one-shot headless Claude task as the agent user (/usr/local/bin/agent-task)
 │   ├── claude-shim.js      ← Claude→LiteLLM image-rewrite proxy (127.0.0.1:4001, pure Node.js stdlib)
 │   ├── upload-server.js    ← image upload companion server (port 1112, pure Node.js stdlib)
 │   └── reset-sandbox.sh    ← wipe generated state from ./workspace and ./data
 ├── patches/                ← one-off scripts applied to WeTTY at image build time, not present at runtime
+│   ├── wetty-clipboard.js  ← adds OSC 52 support so in-container copy actions reach the browser clipboard
+│   ├── wetty-font.js       ← default font stack with symbol coverage for Claude Code's marker glyphs
 │   ├── wetty-csp.js        ← allows the upload-server iframe to load inside WeTTY without being browser-blocked
 │   └── wetty-html.js       ← injects the upload overlay panel (toggle button + slide-in drawer) into WeTTY's page
+├── tests/                  ← unit tests (run at image build — a failing test aborts the build) + manual integration checks
+│   ├── test-claude-shim.js     ← 16 checks: image hoisting, vision routing, class slots (build-time)
+│   ├── test-wetty-clipboard.js ← exercises the OSC 52 handler injected into WeTTY's bundle (build-time)
+│   └── test-searxng.sh         ← live search check — run manually: docker exec agentic-harness-sandbox bash /tests/test-searxng.sh
 ├── harness-proxy/          ← Rust replacement for litellm + claude-shim.js (WIP, issue #10) — see harness-proxy/README.md
 ├── config/
 │   ├── opencode/
-│   │   ├── opencode.json   ← opencode provider and agent config (mounted read-only)
+│   │   ├── opencode.json   ← opencode provider/agent config TEMPLATE (rendered from MODEL_* env at start)
 │   │   ├── AGENTS.md       ← global sandbox rules for opencode (mounted read-only)
 │   │   ├── auth.json       ← opencode provider auth tokens (mounted read-only) — edit before use
 │   │   ├── agents/         ← opencode subagent definitions
@@ -106,15 +129,15 @@ docker-agentic-harness-sandbox/
 │   │   └── skills/         ← reusable skill definitions for opencode
 │   ├── omp/
 │   │   ├── AGENTS.md       ← sandbox rules for omp (mounted read-only)
-│   │   ├── config.yml      ← OMP model role assignments
-│   │   ├── models.yml      ← OMP provider and model definitions (mounted read-only)
+│   │   ├── config.yml      ← OMP model role TEMPLATE (rendered from MODEL_* env at start)
+│   │   ├── models.yml      ← OMP provider/model TEMPLATE (rendered from MODEL_* env at start)
 │   │   └── settings.json   ← OMP settings
 │   ├── claude/
 │   │   ├── settings.json   ← Claude Code settings (env, model, ANTHROPIC_BASE_URL → shim)
 │   │   ├── CLAUDE.md       ← global sandbox rules for Claude Code
 │   │   ├── claude.json     ← first-run state: dark mode, workspace trust, API key accepted
 │   │   └── agents/         ← Claude Code subagents synced into ~/.claude/agents
-│   └── litellm-config.yaml ← LiteLLM proxy: maps Anthropic aliases onto your vLLM model
+│   └── litellm-config.yaml ← LiteLLM TEMPLATE: maps Anthropic aliases + vision entry onto your models
 ├── data/                   ← tool session state, persisted across runs (opencode/, claude/)
 ├── ideas/                  ← design notes and drafts
 └── workspace/              ← put your code projects here (uploads/ holds uploaded images)
@@ -128,8 +151,8 @@ docker-agentic-harness-sandbox/
 # Get the code
 git clone git@github.com:jammsen/docker-agentic-harness-sandbox.git
 
-# Point the stack at your vLLM server (default: http://10.0.0.13:8000/v1)
-export VLLM_URL=http://<your-vllm-ip>:8000/v1
+# Point the stack at your model servers (defaults: DeepSeek brain @ 10.0.0.55:8888, qwen vision @ 10.0.0.13:8000)
+cp .env.example .env   # then set MODEL_URL / MODEL_ID — see "Configuring your models" 
 
 # Build and start in the background
 ./start.sh
@@ -272,6 +295,13 @@ Copy the path and paste it into the terminal. The upload icon (↑) in the WeTTY
 
 Files are saved to `./workspace/uploads/` on your host (same mount as the workspace). Only PNG, JPEG, GIF, and WEBP are accepted; files are validated by magic bytes, not just filename extension. Maximum size is 50 MB. Filenames include a short random suffix to prevent collisions when multiple uploads land in the same second.
 
+### Copying text to your clipboard
+
+Copy actions inside the container (e.g. Claude Code's copy shortcuts) reach your browser clipboard via OSC 52 — WeTTY's terminal is patched for this at build time (`patches/wetty-clipboard.js`). Clipboard reads are deliberately not supported, only writes.
+
+- **Payload limit:** GNU screen (which wraps every session) drops OSC 52 payloads over its 768-byte buffer, so copies longer than ~500 characters are silently lost.
+- **Manual selection** as fallback: hold **Shift** while dragging to select, then **Ctrl+Shift+C** — works best while the agent is idle, since TUI redraws clear the selection.
+
 ---
 
 ### Image analysis with Claude Code
@@ -293,9 +323,9 @@ Claude Code ──Anthropic /v1/messages──▶ claude-shim (127.0.0.1:4001)
 ```
 
 - **`claude-shim`** (`scripts/claude-shim.js`, started by the entrypoint) is a tiny pure-stdlib proxy. Claude Code's Read tool returns images inside Anthropic `tool_result` blocks, and LiteLLM drops images nested there when translating to chat/completions (OpenAI tool-role messages cannot carry images). The shim lifts each image out of the `tool_result` into a normal user message before forwarding — the placement vLLM accepts — and streams everything else through untouched. Both the shim and the upload server are supervised: if either crashes it restarts automatically (shim within 5 s, upload server within 30 s) without disrupting running agent sessions.
-- **LiteLLM** (the `litellm` service in `compose.yml`) maps the Anthropic model aliases (`claude-sonnet-4-5`, `claude-haiku-4-5`) onto your vLLM model and translates Anthropic↔OpenAI. The backend model is configured as `hosted_vllm/<model>` in `config/litellm-config.yaml` so LiteLLM uses chat/completions (the `openai/` prefix instead routes image requests through the OpenAI Responses API, which vLLM rejects).
+- **LiteLLM** (the `litellm` service in `compose.yml`) serves the primary model as `brain` and the image-capable one as `vision`, and translates Anthropic↔OpenAI. The stock Anthropic ids (`claude-sonnet-4-5`, `claude-haiku-4-5`) remain as compat aliases for the primary in case Claude Code ever requests a hardcoded id. The backend model is configured as `hosted_vllm/<model>` in `config/litellm-config.yaml` so LiteLLM uses chat/completions (the `openai/` prefix instead routes image requests through the OpenAI Responses API, which vLLM rejects).
 
-Your model must be **vision-capable** for any of this to return a real description. If images come back as generic hallucinations, confirm the model serves vision over chat/completions:
+The model answering the request must be **vision-capable** for any of this to return a real description — in dual-model setups (`MODEL_VISION=false`) the shim routes image requests to the `VISION_MODEL_*` model automatically, so it is the vision model you should test here. If images come back as generic hallucinations, confirm the model serves vision over chat/completions:
 
 ```bash
 curl http://YOUR_VLLM_IP:8000/v1/chat/completions -H "Content-Type: application/json" -d '{

@@ -1,12 +1,15 @@
-modelRoles: 
-  default: vllm/qwen3.6-35b
-  slow: vllm/qwen3.6-35b
+# TEMPLATE — rendered by entrypoint.sh (envsubst) into ~/.omp/agent/config.yml.
+modelRoles:
+  default: vllm/${MODEL_ID}
+  slow: vllm/${MODEL_ID}
 symbolPreset: unicode
-theme: 
+theme:
   dark: pearl
 setupVersion: 1
-# Context management — prevent hanging at large contexts
-context: 
-  maxTokens: 120000
+# Context management — prevent hanging at large contexts.
+# summarizeAt is static: if you set MODEL_CONTEXT below ~100000, lower it
+# to roughly 75% of MODEL_CONTEXT here as well.
+context:
+  maxTokens: ${MODEL_CONTEXT}
   summarizeAt: 90000
   summaryTokens: 8000

@@ -19,13 +19,15 @@ if (!imagePath) {
 }
 const userPrompt = process.argv[3] || 'Describe this image in detail. What do you see?';
 
-const VLLM_URL = process.env.VLLM_URL;
-if (!VLLM_URL) {
-  process.stderr.write('Error: VLLM_URL is not set. Set it in compose.yml, e.g. VLLM_URL=http://host:8000/v1\n');
+// Explicit vision call — always target the vision model (which defaults to the
+// primary in single-model setups).
+const API_URL = process.env.VISION_MODEL_URL || process.env.MODEL_URL;
+const MODEL   = process.env.VISION_MODEL_ID  || process.env.MODEL_ID;
+if (!API_URL || !MODEL) {
+  process.stderr.write('Error: no vision model configured. Set MODEL_URL/MODEL_ID (or VISION_MODEL_*) in compose.yml / .env\n');
   process.exit(1);
 }
-const MODEL              = process.env.VLLM_MODEL            || 'qwen3.6-35b';
-const REQUEST_TIMEOUT_MS = parseInt(process.env.VLLM_REQUEST_TIMEOUT_MS || '300000', 10); // 5 min
+const REQUEST_TIMEOUT_MS = parseInt(process.env.MODEL_REQUEST_TIMEOUT_MS || '300000', 10); // 5 min
 
 function mimeFromMagic(buf) {
   if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'image/png';
@@ -64,7 +66,7 @@ const payload = JSON.stringify({
   max_tokens: 2048,
 });
 
-const base = VLLM_URL.endsWith('/') ? VLLM_URL : VLLM_URL + '/';
+const base = API_URL.endsWith('/') ? API_URL : API_URL + '/';
 const upstreamUrl = new URL('chat/completions', base);
 const options = {
   hostname: upstreamUrl.hostname,

@@ -16,3 +16,5 @@ workspace/uploads/*
 !workspace/uploads/.gitkeep
 
 .DS_Store
+# Local model/env configuration (copy of .env.example)
+.env

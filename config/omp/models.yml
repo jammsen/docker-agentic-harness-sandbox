@@ -1,16 +1,31 @@
+# TEMPLATE — rendered by entrypoint.sh (envsubst) into ~/.omp/agent/models.yml.
+# ${MODEL_*} / ${VISION_MODEL_*} come from compose.yml (x-model-env).
 providers:
   vllm:
-    baseUrl: "http://10.0.0.13:8000/v1"
+    baseUrl: "${MODEL_URL}"
     apiKey: "dummy"
     api: openai-completions
     auth: apiKey
     models:
-      - id: qwen3.6-35b
-        name: "Qwen3.6 35B A3B"
-        contextWindow: 131072
-        maxTokens: 16384
+      - id: ${MODEL_ID}
+        name: "${MODEL_NAME}"
+        contextWindow: ${MODEL_CONTEXT}
+        maxTokens: ${MODEL_MAX_TOKENS}
         # Aggressive context trim to prevent hanging at large contexts:
         # OMP will refuse to send a request that would exceed contextWindow,
         # so keeping maxTokens conservative leaves headroom for the prompt.
         systemPromptSize: 4096
-
+  # Vision endpoint — same as the primary in single-model setups; switch to
+  # it in OMP's model picker when working with images and the primary model
+  # is text-only.
+  vision:
+    baseUrl: "${VISION_MODEL_URL}"
+    apiKey: "dummy"
+    api: openai-completions
+    auth: apiKey
+    models:
+      - id: ${VISION_MODEL_ID}
+        name: "${VISION_MODEL_NAME}"
+        contextWindow: ${VISION_MODEL_CONTEXT}
+        maxTokens: ${VISION_MODEL_MAX_TOKENS}
+        systemPromptSize: 4096
