@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs inside the browser terminal — spawned by wetty for each browser connection.
-# Self-wraps in GNU screen so closing the browser tab detaches rather than kills the session.
-# On reconnect, screen reattaches to the same running agent.
+# Self-wraps in tmux so closing the browser tab detaches rather than kills the session.
+# On reconnect, tmux reattaches to the same running agent.
 # Inherits AVAILABLE_TOOLS_ENV, DEFAULT_TOOL, TOOLS from entrypoint.sh.
 
 # wetty must run as root for local/command mode; drop to agent user immediately.
@@ -12,35 +12,23 @@ fi
 
 set -euo pipefail
 
-# --- Screen session persistence ---
-# STY is set by screen when already inside a session — skip this block if so.
-if [[ -z "${STY:-}" ]]; then
+# --- tmux session persistence ---
+# TMUX is set when already inside a session — skip this block if so.
+if [[ -z "${TMUX:-}" ]]; then
 
-    # Clean up dead/zombie screen sessions before listing.
-    screen -wipe &>/dev/null || true
+    # Parse running tmux sessions for this user.
+    SESSION_IDS=()    # "sandbox-..." — used for tmux attach -t
+    SESSION_LABELS=() # "sandbox-...  (Detached)" — shown to user
+    while IFS=' ' read -r _name _status; do
+        [[ -n "$_name" ]] || continue
+        SESSION_IDS+=("$_name")
+        SESSION_LABELS+=("$_name  ($_status)")
+    done < <(tmux list-sessions -F '#{session_name} #{?session_attached,Attached,Detached}' 2>/dev/null || true)
 
-    # Parse running screen sessions for this user.
-    SESSION_IDS=()    # "12345.sandbox" — used for screen -x
-    SESSION_LABELS=() # "sandbox  (Detached)" — shown to user
-
-    while IFS= read -r line; do
-        # Match lines like: "    12345.sandbox    (date)    (Detached)"
-        # Capture the full PID.name and the final status token.
-        # Use [(] [)] instead of \( \) — bash 5.3+ rejects escaped parens in [[ =~ ]] patterns.
-        _SCREEN_RE='^[[:space:]]+([0-9]+[.][^[:space:]]+).*[(]([^)]+)[)][[:space:]]*$'
-        if [[ "$line" =~ $_SCREEN_RE ]]; then
-            FULL_ID="${BASH_REMATCH[1]}"          # "12345.sandbox"
-            STATUS="${BASH_REMATCH[2]}"           # "Detached" or "Attached"
-            NAME="${FULL_ID#*.}"                  # "sandbox"
-            SESSION_IDS+=("$FULL_ID")
-            SESSION_LABELS+=("$NAME  ($STATUS)")
-        fi
-    done < <(screen -ls 2>/dev/null || true)
-
-    # Present picker with re-prompt on invalid input.
-    # Always shown — even with no sessions — so the terminal has time to size
-    # correctly before screen starts. Use screen -x (multiattach) so multiple
-    # browser tabs can share a session.
+    # Present picker with re-prompt on invalid input. Always shown — even with
+    # no sessions — so the terminal has time to size correctly before tmux
+    # starts. Attach is multiattach by default; window-size latest (tmux.conf)
+    # sizes the session to the most recently active client.
     _MAX=$((${#SESSION_IDS[@]} + 1))
     while true; do
         echo ""
@@ -58,16 +46,15 @@ if [[ -z "${STY:-}" ]]; then
         _SEL="${_SEL:-1}"
 
         if [[ "$_SEL" =~ ^[0-9]+$ ]] && [[ "$_SEL" -ge 1 ]] && [[ "$_SEL" -le "${#SESSION_IDS[@]}" ]]; then
-            # -x = multiattach: works whether the session is Detached or Attached.
-            exec screen -x "${SESSION_IDS[$((${_SEL}-1))]}"
+            exec tmux attach-session -t "${SESSION_IDS[$((${_SEL}-1))]}"
         elif [[ "$_SEL" =~ ^[0-9]+$ ]] && [[ "$_SEL" -eq "$_MAX" ]]; then
-            exec screen -S "sandbox-started-$(date +%Y-%m-%d-%H:%M:%S)" "$0"
+            exec tmux new-session -s "sandbox-started-$(date +%Y-%m-%d-%H-%M-%S)" "$0"
         else
             echo "  Invalid — enter a number between 1 and $_MAX"
         fi
     done
 fi
-# --- From here on we are inside a screen session ---
+# --- From here on we are inside a tmux session ---
 
 # Tool list is built and validated once by entrypoint.sh, exported as AVAILABLE_TOOLS_ENV.
 if [[ -z "${AVAILABLE_TOOLS_ENV:-}" ]]; then

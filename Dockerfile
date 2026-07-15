@@ -39,7 +39,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends --no-install-su
     postgresql-client \
     procps \
     ripgrep \
-    screen \
+    tmux \
     sqlite3 \
     tree \
     tzdata \
@@ -175,6 +175,7 @@ WORKDIR /
 COPY --chmod=744 scripts/entrypoint.sh /
 COPY --chmod=644 includes/ /includes/
 COPY --chmod=755 scripts/agent-session.sh /agent-session.sh
+COPY --chmod=644 config/tmux.conf /home/agent/.tmux.conf
 COPY --chmod=644 scripts/upload-server.js /upload-server.js
 COPY --chmod=755 scripts/upload-server/ /upload-server/
 COPY --chmod=644 scripts/claude-shim.js /claude-shim.js

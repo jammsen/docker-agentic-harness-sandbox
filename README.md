@@ -2,7 +2,7 @@
 
 Run agentic coding tools — OpenCode, OMP, and more — inside a single hardened Docker container with a **browser-based terminal** (WeTTY over HTTPS). Connect to a self-hosted vLLM inference server or any OpenAI-compatible API. No cloud API keys required.
 
-Access the terminal from any browser — desktop or mobile — at `https://<host>:1111`. GNU screen keeps the agent session alive across reconnects: close the tab, come back later, reattach.
+Access the terminal from any browser — desktop or mobile — at `https://<host>:1111`. tmux keeps the agent session alive across reconnects: close the tab, come back later, reattach.
 
 A companion **image upload page** runs on `https://<host>:1112`. Paste a screenshot with Ctrl+V, drag-and-drop, or use the file picker — the image is saved to `workspace/uploads/` and the page gives you the exact path to paste into the terminal.
 
@@ -104,7 +104,7 @@ docker-agentic-harness-sandbox/
 │   └── services.sh         ← process supervisor + upload server, claude-shim and WeTTY startup
 ├── scripts/                ← runtime + maintenance scripts (baked into the image)
 │   ├── entrypoint.sh       ← container startup manager: sources includes/, runs setup, execs WeTTY
-│   ├── agent-session.sh    ← per-browser-connection: privilege drop, screen session, tool selection
+│   ├── agent-session.sh    ← per-browser-connection: privilege drop, tmux session, tool selection
 │   ├── agent-task.sh       ← one-shot headless Claude task as the agent user (/usr/local/bin/agent-task)
 │   ├── claude-shim.js      ← Claude→LiteLLM image-rewrite proxy (127.0.0.1:4001, pure Node.js stdlib)
 │   ├── upload-server.js    ← image upload companion server (port 1112, pure Node.js stdlib)
@@ -137,6 +137,7 @@ docker-agentic-harness-sandbox/
 │   │   ├── CLAUDE.md       ← global sandbox rules for Claude Code
 │   │   ├── claude.json     ← first-run state: dark mode, workspace trust, API key accepted
 │   │   └── agents/         ← Claude Code subagents synced into ~/.claude/agents
+│   ├── tmux.conf           ← window-size latest (dynamic per-client resize) + OSC 52 clipboard forwarding
 │   └── litellm-config.yaml ← LiteLLM TEMPLATE: maps Anthropic aliases + vision entry onto your models
 ├── data/                   ← tool session state, persisted across runs (opencode/, claude/)
 ├── ideas/                  ← design notes and drafts
@@ -171,9 +172,9 @@ https://<your-server-ip>:1111
 
 The terminal runs `agent-session.sh`, which:
 1. Drops privileges from root to the `agent` user
-2. Offers a GNU screen session picker (create new or reattach to an existing session)
+2. Offers a tmux session picker (create new or reattach to an existing session)
 3. Shows a tool selection menu (opencode, omp, …)
-4. Launches the chosen tool inside screen — closing the browser tab **detaches** rather than kills the session
+4. Launches the chosen tool inside tmux — closing the browser tab **detaches** rather than kills the session
 
 ---
 
@@ -215,7 +216,7 @@ Use `scripts/reset-sandbox.sh` only when you intentionally want to remove genera
 
 ### Tool selection
 
-After attaching to (or creating) a screen session, the browser terminal presents a numbered menu. **Only one tool runs per screen session** — select it and the agent starts.
+After attaching to (or creating) a tmux session, the browser terminal presents a numbered menu. **Only one tool runs per tmux session** — select it and the agent starts.
 
 The menu order and default are controlled by the `TOOLS` env var in `compose.yml`:
 
@@ -247,10 +248,10 @@ Existing sessions:
 Enter selection [1]:
 ```
 
-- **Select an existing session** — uses `screen -x` (multiattach), so multiple browser tabs can share the same running agent session simultaneously.
-- **Start a new session** — creates a fresh screen session with a new timestamped name and runs the tool selector again.
-- **Close the browser tab** — detaches from screen. The agent keeps running. Reopen the browser and reattach to continue where you left off.
-- **Stale sessions** are automatically cleaned up with `screen -wipe` on each connect.
+- **Select an existing session** — tmux attach (multiattach by default) — multiple browser tabs/devices share the session, and `window-size latest` resizes it to whichever client was active last (phone and desktop each get a proper fit).
+- **Start a new session** — creates a fresh tmux session with a new timestamped name and runs the tool selector again.
+- **Close the browser tab** — detaches from tmux. The agent keeps running. Reopen the browser and reattach to continue where you left off.
+- **Clipboard** — tmux forwards OSC 52 copies natively (`set-clipboard on`), so long copies are no longer capped at ~500 characters like under GNU screen.
 - **First-ever connection** (no existing sessions) — the picker shows only "Start a new session". Press Enter or type `1` to start; any other input re-prompts.
 - **Invalid input** — the picker re-prompts rather than silently defaulting.
 
@@ -299,7 +300,7 @@ Files are saved to `./workspace/uploads/` on your host (same mount as the worksp
 
 Copy actions inside the container (e.g. Claude Code's copy shortcuts) reach your browser clipboard via OSC 52 — WeTTY's terminal is patched for this at build time (`patches/wetty-clipboard.js`). Clipboard reads are deliberately not supported, only writes.
 
-- **Payload limit:** GNU screen (which wraps every session) drops OSC 52 payloads over its 768-byte buffer, so copies longer than ~500 characters are silently lost.
+- **No size limit:** tmux (which wraps every session) forwards OSC 52 natively via `set-clipboard on` — long copies work (under GNU screen they were capped at ~500 characters).
 - **Manual selection** as fallback: hold **Shift** while dragging to select, then **Ctrl+Shift+C** — works best while the agent is idle, since TUI redraws clear the selection.
 
 ---
@@ -363,10 +364,10 @@ For OpenCode, the status bar shows `X tokens (Y% used)`. Build mode consumes ~10
 
 **Browser shows "Session ended" immediately on connect**
 
-A stale screen session may be blocking attachment. Clean it up:
+A stale tmux session may be blocking attachment. Clean it up:
 
 ```bash
-docker exec agentic-harness-sandbox su -s /bin/bash agent -c "screen -wipe"
+docker exec agentic-harness-sandbox su -s /bin/bash agent -c "tmux kill-server"
 ```
 
 Then reconnect in the browser.
@@ -404,7 +405,7 @@ Some local models can struggle with long agentic tool-use loops. Mitigations:
 
 ## Security Notes
 
-The container starts as root to handle setup (creating the user, fixing file ownership on mounted volumes). WeTTY also runs as root — this is required for WeTTY v3 to use local/command mode instead of SSH mode. The privilege drop happens inside `agent-session.sh` via `gosu agent` on every browser connection, before GNU screen or any agent tool starts. There is no way back to root after that point.
+The container starts as root to handle setup (creating the user, fixing file ownership on mounted volumes). WeTTY also runs as root — this is required for WeTTY v3 to use local/command mode instead of SSH mode. The privilege drop happens inside `agent-session.sh` via `gosu agent` on every browser connection, before tmux or any agent tool starts. There is no way back to root after that point.
 
 **Restrictions in place:**
 
@@ -437,7 +438,7 @@ All runtimes and tools are installed at **build time** under the `agent` user �
 | `agent-task` | bundled | Run a one-shot headless Claude Code task as the `agent` user (`docker exec … agent-task "…"`) |
 | `wetty` | npm global | Browser-based terminal over HTTPS (port 1111) — [npmjs.com/package/wetty](https://www.npmjs.com/package/wetty) |
 | `upload-server.js` | bundled (Node.js stdlib) | Image upload companion page (port 1112) — drag-drop, Ctrl+V paste, file picker |
-| `screen` | apt | Session persistence — agent keeps running when browser tab closes — [gnu.org/software/screen](https://www.gnu.org/software/screen/) |
+| `tmux` | apt | Session persistence + per-client dynamic resizing + OSC 52 clipboard — [github.com/tmux/tmux](https://github.com/tmux/tmux) |
 | Node.js + npm | apt | Runtime for WeTTY; available in workspace for Node.js projects — [nodejs.org](https://nodejs.org) |
 | Python (`uv`) | `astral.sh/uv` | General scripting in the workspace — [docs.astral.sh/uv](https://docs.astral.sh/uv/) |
 | Rust (`rustup`) | `sh.rustup.rs` | General building in the workspace — [rustup.rs](https://rustup.rs) |
