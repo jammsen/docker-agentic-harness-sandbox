@@ -74,6 +74,9 @@ services:
       - ./config/claude/CLAUDE.md:/home/agent/.config/claude-CLAUDE.md:ro
       - ./config/claude/agents:/home/agent/.config/claude-agents:ro
       - ./config/claude/claude.json:/home/agent/.config/claude.json:ro
+      # WeTTY xterm.js defaults (Dark+ palette). Served straight to the browser, so
+      # edits need only a page reload — no rebuild. Overrides the build-time font patch.
+      - ./config/wetty/xterm_defaults.js:/usr/local/lib/node_modules/wetty/build/client/xterm_config/xterm_defaults.js:ro
       # Claude Code session state (transcripts, checkpoints, etc.)
       - ./data/claude:/home/agent/.claude:rw
       # Your project workspace (read-write so tools can edit files)
@@ -141,7 +144,8 @@ services:
 #    mem_limit: 128m                               # tiny proxy — hard ceiling
 
   litellm:
-    image: ghcr.io/berriai/litellm:v1.89.3        # latest stable as of 2026-06-22; post-attack (1.82.7/1.82.8 were the compromised PyPI versions)
+    image: ghcr.io/berriai/litellm:v1.92.0        # latest stable as of 2026-07-16; post-attack (1.82.7/1.82.8 were the compromised PyPI versions)
+    # >=1.90.0 required: older /v1/messages streaming drops each block's first token (BerriAI/litellm#30014)
     container_name: agentic-litellm
     environment:
       <<: *model-env

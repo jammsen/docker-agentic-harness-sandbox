@@ -1,6 +1,6 @@
 {
   "model": "fable",
-  "theme": "dark",
+  "theme": "dark-daltonized",
   "env": {
     "DISABLE_AUTOUPDATER": "1",
     "CLAUDE_CODE_DISABLE_TELEMETRY": "1",

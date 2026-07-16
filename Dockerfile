@@ -77,11 +77,13 @@ RUN sed -i \
 # via: docker exec agentic-harness-sandbox bash /tests/test-searxng.sh
 COPY --chmod=644 tests/ /tests/
 
-# Patch WeTTY — CSP frameSrc + upload overlay panel + OSC 52 clipboard support.
+# Patch WeTTY — CSP frameSrc + upload overlay panel + OSC 52 clipboard + font/theme defaults.
 # Scripts live in patches/ and are removed after use (not needed at runtime).
+# wetty-theme must follow wetty-font: it would otherwise break that patch's anchor.
 COPY --chmod=644 patches/ /tmp/patches/
 RUN node /tmp/patches/wetty-csp.js && node /tmp/patches/wetty-html.js \
     && node /tmp/patches/wetty-clipboard.js && node /tmp/patches/wetty-font.js \
+    && node /tmp/patches/wetty-theme.js \
     && rm -rf /tmp/patches && node /tests/test-wetty-clipboard.js
 
 # Replace WeTTY's default favicon with our own console icon.
