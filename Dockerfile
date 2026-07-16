@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends --no-install-su
     ca-certificates \
     curl \
     dnsutils \
+    gettext-base \
     git \
     git-lfs \
     gosu \
@@ -38,7 +39,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends --no-install-su
     postgresql-client \
     procps \
     ripgrep \
-    screen \
+    tmux \
     sqlite3 \
     tree \
     tzdata \
@@ -71,10 +72,19 @@ RUN sed -i \
     && grep -q 'resolve(0)' /usr/local/lib/node_modules/wetty/build/server/spawn/env.js \
     && echo 'env.js patched OK'
 
-# Patch WeTTY — CSP frameSrc + upload overlay panel.
+# Unit tests — each RUN below fails the build if its layer's code is broken.
+# test-searxng.sh is an integration check (needs live services); run it manually
+# via: docker exec agentic-harness-sandbox bash /tests/test-searxng.sh
+COPY --chmod=644 tests/ /tests/
+
+# Patch WeTTY — CSP frameSrc + upload overlay panel + OSC 52 clipboard + font/theme defaults.
 # Scripts live in patches/ and are removed after use (not needed at runtime).
+# wetty-theme must follow wetty-font: it would otherwise break that patch's anchor.
 COPY --chmod=644 patches/ /tmp/patches/
-RUN node /tmp/patches/wetty-csp.js && node /tmp/patches/wetty-html.js && rm -rf /tmp/patches
+RUN node /tmp/patches/wetty-csp.js && node /tmp/patches/wetty-html.js \
+    && node /tmp/patches/wetty-clipboard.js && node /tmp/patches/wetty-font.js \
+    && node /tmp/patches/wetty-theme.js \
+    && rm -rf /tmp/patches && node /tests/test-wetty-clipboard.js
 
 # Replace WeTTY's default favicon with our own console icon.
 # Alternates live in assets/favicon-alternates/ for reference, not used at build time.
@@ -165,12 +175,14 @@ USER root
 WORKDIR /
 
 COPY --chmod=744 scripts/entrypoint.sh /
+COPY --chmod=644 includes/ /includes/
 COPY --chmod=755 scripts/agent-session.sh /agent-session.sh
+COPY --chmod=644 config/tmux.conf /home/agent/.tmux.conf
 COPY --chmod=644 scripts/upload-server.js /upload-server.js
 COPY --chmod=755 scripts/upload-server/ /upload-server/
 COPY --chmod=644 scripts/claude-shim.js /claude-shim.js
+RUN SHIM_PATH=/claude-shim.js node /tests/test-claude-shim.js
 COPY --chmod=755 scripts/agent-task.sh /usr/local/bin/agent-task
 COPY --chmod=755 scripts/analyze-image.js /usr/local/bin/analyze-image
-COPY --chmod=644 scripts/.screenrc /home/agent/.screenrc
 
 ENTRYPOINT ["./entrypoint.sh"]

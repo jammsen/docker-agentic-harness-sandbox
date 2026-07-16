@@ -1,32 +1,84 @@
+# LiteLLM proxy config TEMPLATE — rendered at container start by the sh wrapper
+# in compose.yml, which replaces the __PLACEHOLDER__ tokens from the MODEL_* /
+# VISION_MODEL_* environment (see the x-model-env block in compose.yml).
+# api_base values use LiteLLM's native os.environ/ resolution and need no sed.
 model_list:
-  # Main model — all standard Claude aliases are redirected here via ANTHROPIC_DEFAULT_* env vars.
-  # Built-in subagents (Explore, claude-code-guide) use the haiku alias which resolves to this.
-  # - model_name: qwen3.6-35b
-  #   litellm_params:
-  #     model: openai/qwen3.6-35b
-  #     api_base: http://10.0.0.13:8000/v1
-  #     api_key: dummy
-  #     use_responses_api: false      # force chat/completions path
-  #   model_info:
-  #     supports_vision: true         # explicitly tell LiteLLM this model accepts images
-  #     mode: chat                    # explicitly declare this as a chat model
-  - model_name: claude-sonnet-4-5
+  # Brain — the primary model under its canonical role name.
+  - model_name: brain
     litellm_params:
-      model: hosted_vllm/qwen3.6-35b
-      api_base: "os.environ/VLLM_URL"
+      model: hosted_vllm/__MODEL_ID__
+      api_base: "os.environ/MODEL_URL"
+      api_key: dummy
+    model_info:
+      supports_vision: __MODEL_VISION__
+
+  # Model-class aliases — Claude Code's slots send these names (mapped by the
+  # ANTHROPIC_DEFAULT_* env vars in config/claude/settings.json), so claude-shim
+  # can log which class made each request. opus/fable → brain backend,
+  # haiku/sonnet → vision backend. claude-shim.js's VISION_SIDE set must match
+  # this split.
+  - model_name: fable
+    litellm_params:
+      model: hosted_vllm/__MODEL_ID__
+      api_base: "os.environ/MODEL_URL"
+      api_key: dummy
+    model_info:
+      supports_vision: __MODEL_VISION__
+
+  - model_name: opus
+    litellm_params:
+      model: hosted_vllm/__MODEL_ID__
+      api_base: "os.environ/MODEL_URL"
+      api_key: dummy
+    model_info:
+      supports_vision: __MODEL_VISION__
+
+  - model_name: sonnet
+    litellm_params:
+      model: hosted_vllm/__VISION_MODEL_ID__
+      api_base: "os.environ/VISION_MODEL_URL"
       api_key: dummy
     model_info:
       supports_vision: true
+
+  - model_name: haiku
+    litellm_params:
+      model: hosted_vllm/__VISION_MODEL_ID__
+      api_base: "os.environ/VISION_MODEL_URL"
+      api_key: dummy
+    model_info:
+      supports_vision: true
+
+  # Compat net — stock Anthropic ids, kept in case any Claude Code code path
+  # requests a hardcoded id without consulting the ANTHROPIC_DEFAULT_* env
+  # vars. Same backend as `brain`.
+  - model_name: claude-sonnet-4-5
+    litellm_params:
+      model: hosted_vllm/__MODEL_ID__
+      api_base: "os.environ/MODEL_URL"
+      api_key: dummy
+    model_info:
+      supports_vision: __MODEL_VISION__
 
   - model_name: claude-haiku-4-5
     litellm_params:
-      model: hosted_vllm/qwen3.6-35b
-      api_base: "os.environ/VLLM_URL"
+      model: hosted_vllm/__MODEL_ID__
+      api_base: "os.environ/MODEL_URL"
+      api_key: dummy
+    model_info:
+      supports_vision: __MODEL_VISION__
+
+  # Vision model — target for image-bearing requests when the primary is
+  # text-only (MODEL_VISION=false): claude-shim.js rewrites those requests to
+  # this model name. Also directly selectable in Claude Code via `/model vision`.
+  # Defaults to the primary model when VISION_MODEL_* is unset.
+  - model_name: vision
+    litellm_params:
+      model: hosted_vllm/__VISION_MODEL_ID__
+      api_base: "os.environ/VISION_MODEL_URL"
       api_key: dummy
     model_info:
       supports_vision: true
-
-
 
 litellm_settings:
   drop_params: true                 # silently drop unsupported params (thinking, effort, etc.) instead of erroring

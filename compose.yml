@@ -1,3 +1,21 @@
+# Model configuration — single source of truth for every tool in the sandbox.
+# Set in a `.env` next to this file (see .env.example) or export before
+# `compose up`; every var defaults, so a bare `docker compose up` runs the
+# standard dual-model setup: DeepSeek V4 Flash as the text-only brain,
+# Qwen3.6 35B as the vision model for image requests.
+x-model-env: &model-env
+  MODEL_URL: ${MODEL_URL:-http://10.0.0.55:8888/v1}              # OpenAI-compatible API base incl. /v1
+  MODEL_ID: ${MODEL_ID:-deepseek-v4-flash-dspark}                # exact model id from GET $MODEL_URL/models
+  MODEL_NAME: ${MODEL_NAME:-DeepSeek V4 Flash DSpark}            # display name in tool pickers
+  MODEL_CONTEXT: ${MODEL_CONTEXT:-1000000}                       # context window budget for the tools
+  MODEL_MAX_TOKENS: ${MODEL_MAX_TOKENS:-16384}                   # max completion tokens
+  MODEL_VISION: ${MODEL_VISION:-false}                           # false = primary is text-only; claude-shim reroutes image requests to the vision model
+  VISION_MODEL_URL: ${VISION_MODEL_URL:-http://10.0.0.13:8000/v1}
+  VISION_MODEL_ID: ${VISION_MODEL_ID:-qwen3.6-35b}
+  VISION_MODEL_NAME: ${VISION_MODEL_NAME:-Qwen3.6 35B A3B}
+  VISION_MODEL_CONTEXT: ${VISION_MODEL_CONTEXT:-120000}
+  VISION_MODEL_MAX_TOKENS: ${VISION_MODEL_MAX_TOKENS:-16384}
+
 services:
   sandbox:
     build:
@@ -8,17 +26,17 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - HOME=/home/agent
-      - SHELL=/bin/bash
-      - USER=agent
-      - LANG=C.UTF-8                            # ensures TUI apps (opencode, omp) render Unicode box-drawing chars
-      - LC_ALL=C.UTF-8
-      - TOOLS=claude,opencode,omp               # order defines menu order and default (first = default)
-      - DEFAULT_TOOL=${DEFAULT_TOOL:-}          # pass-through from host shell; empty = show menu in browser
-      - CLAUDE_CODE_NO_FLICKER=1                # prevents Claude Code from using alt-screen tricks that break scroll in WeTTY
-      - LITELLM_UPSTREAM=http://agentic-litellm:4000   # upstream for claude-shim.js (Claude image-rewrite proxy on 127.0.0.1:4001)
-      - SEARXNG_URL=http://searxng:8080              # used by OMP's built-in web search (providers.webSearch=searxng) and mcp-searxng
-      - VLLM_URL=${VLLM_URL:-http://10.0.0.13:8000/v1} # vLLM API base incl. /v1 — override by setting VLLM_URL in your shell before compose up
+      <<: *model-env
+      HOME: /home/agent
+      SHELL: /bin/bash
+      USER: agent
+      LANG: C.UTF-8                             # ensures TUI apps (opencode, omp) render Unicode box-drawing chars
+      LC_ALL: C.UTF-8
+      TOOLS: claude,opencode,omp                # order defines menu order and default (first = default)
+      DEFAULT_TOOL: ${DEFAULT_TOOL:-}           # pass-through from host shell; empty = show menu in browser
+      CLAUDE_CODE_NO_FLICKER: "1"               # prevents Claude Code from using alt-screen tricks that break scroll in WeTTY
+      LITELLM_UPSTREAM: http://agentic-litellm:4000   # upstream for claude-shim.js (Claude image-rewrite proxy on 127.0.0.1:4001)
+      SEARXNG_URL: http://searxng:8080               # used by OMP's built-in web search (providers.webSearch=searxng) and mcp-searxng
     init: true                                  # tini as PID 1 — reaps zombie child processes
     restart: unless-stopped                     # auto-restart on failure or host reboot
     read_only: false                            # opencode writes session state
@@ -36,16 +54,19 @@ services:
       - "1112:1112/tcp"                         # image upload companion — open https://<host>:1112
       - "3000:3000/tcp"                         # agent dev server port (Vite, Express, Django, Flask, etc.)
     volumes:
-      # opencode config (read-only mounts)
-      - ./config/opencode/opencode.json:/home/agent/.config/opencode/opencode.json:ro
+      # opencode config. opencode.json is a template — the entrypoint renders
+      # ${MODEL_*} placeholders into ~/.config/opencode/opencode.json on start.
+      - ./config/opencode/opencode.json:/home/agent/.config/templates/opencode.json:ro
       - ./config/opencode/AGENTS.md:/home/agent/.config/opencode/AGENTS.md:ro
       - ./config/opencode/skills:/home/agent/.config/opencode/skills:ro
       - ./config/opencode/commands:/home/agent/.config/opencode/commands:ro
       - ./config/opencode/agents:/home/agent/.config/opencode/agents:ro
-      # OMP config (omp-config.yml must be rw so OMP can persist setupVersion)
-      - ./config/omp/config.yml:/home/agent/.omp/agent/config.yml:rw
+      # OMP config. config.yml and models.yml are templates rendered by the
+      # entrypoint into ~/.omp/agent/ (rendered copies live in the container
+      # layer; setupVersion persists across restarts, resets on recreate).
+      - ./config/omp/config.yml:/home/agent/.config/templates/omp-config.yml:ro
+      - ./config/omp/models.yml:/home/agent/.config/templates/omp-models.yml:ro
       - ./config/omp/settings.json:/home/agent/.omp/agent/settings.json:rw
-      - ./config/omp/models.yml:/home/agent/.omp/agent/models.yml:ro
       - ./config/omp/AGENTS.md:/home/agent/.omp/agent/AGENTS.md:ro
       - ./config/omp/mcp.json:/home/agent/.omp/agent/mcp.json:ro
       # Claude Code config (read-only sources; entrypoint syncs them into ~/.claude/ on start)
@@ -53,6 +74,9 @@ services:
       - ./config/claude/CLAUDE.md:/home/agent/.config/claude-CLAUDE.md:ro
       - ./config/claude/agents:/home/agent/.config/claude-agents:ro
       - ./config/claude/claude.json:/home/agent/.config/claude.json:ro
+      # WeTTY xterm.js defaults (Dark+ palette). Served straight to the browser, so
+      # edits need only a page reload — no rebuild. Overrides the build-time font patch.
+      - ./config/wetty/xterm_defaults.js:/usr/local/lib/node_modules/wetty/build/client/xterm_config/xterm_defaults.js:ro
       # Claude Code session state (transcripts, checkpoints, etc.)
       - ./data/claude:/home/agent/.claude:rw
       # Your project workspace (read-write so tools can edit files)
@@ -63,7 +87,7 @@ services:
       # outside of rootfs" error). Entrypoint symlinks it into place instead, keeping it live.
       - ./config/opencode/auth.json:/home/agent/.config/opencode-auth.json:ro
     # No network_mode: host — use bridge so container is isolated
-    # but can still reach your vLLM server via host IP
+    # but can still reach your inference server via host IP
 
   searxng:
     image: docker.io/searxng/searxng:2026.6.26-f8ffbf36f
@@ -98,35 +122,36 @@ services:
   # Translates Anthropic Messages to vLLM/OpenAI, including streaming, images, tools and token counts.
   # NOT yet wired in: sandbox cutover still has to point ANTHROPIC_BASE_URL at this proxy
   # and remove the litellm/shim request path in PLAN.md Step 7.
-  harness-proxy:
-    build:
-      context: ./harness-proxy
-    container_name: agentic-harness-proxy
-    environment:
-      - HARNESS_PROXY_BIND=0.0.0.0:4000           # bind for standalone container (network-reachable)
-      - VLLM_URL=${VLLM_URL:-http://10.0.0.13:8000/v1} # shared override; proxy normalizes trailing /v1
-      - VLLM_MODEL=qwen3.6-35b
-    # No published ports — only reachable on the internal docker network, like litellm.
-    # vLLM (10.0.0.13) is a routable LAN IP, so no extra_hosts/host-gateway needed.
-    init: true                                    # tini as PID 1 — reaps the process cleanly
-    restart: unless-stopped
-    read_only: true                               # static binary writes nothing to disk
-    user: "65532:65532"                           # non-root (also baked into the image)
-    security_opt:
-      - no-new-privileges:true                    # no privilege escalation
-    cap_drop:
-      - ALL                                       # drop every Linux capability
-    pids_limit: 64                                # cap fork bombs
-    mem_limit: 128m                               # tiny proxy — hard ceiling
+#  harness-proxy:
+#    build:
+#      context: ./harness-proxy
+#    container_name: agentic-harness-proxy
+#    environment:
+#      - HARNESS_PROXY_BIND=0.0.0.0:4000           # bind for standalone container (network-reachable)
+#      - VLLM_URL=${VLLM_URL:-http://10.0.0.13:8000/v1} # shared override; proxy normalizes trailing /v1
+#      - VLLM_MODEL=qwen3.6-35b
+#    # No published ports — only reachable on the internal docker network, like litellm.
+#    # vLLM (10.0.0.13) is a routable LAN IP, so no extra_hosts/host-gateway needed.
+#    init: true                                    # tini as PID 1 — reaps the process cleanly
+#    restart: unless-stopped
+#    read_only: true                               # static binary writes nothing to disk
+#    user: "65532:65532"                           # non-root (also baked into the image)
+#    security_opt:
+#      - no-new-privileges:true                    # no privilege escalation
+#    cap_drop:
+#      - ALL                                       # drop every Linux capability
+#    pids_limit: 64                                # cap fork bombs
+#    mem_limit: 128m                               # tiny proxy — hard ceiling
 
   litellm:
-    image: ghcr.io/berriai/litellm:v1.89.3        # latest stable as of 2026-06-22; post-attack (1.82.7/1.82.8 were the compromised PyPI versions)
+    image: ghcr.io/berriai/litellm:v1.92.0        # latest stable as of 2026-07-16; post-attack (1.82.7/1.82.8 were the compromised PyPI versions)
+    # >=1.90.0 required: older /v1/messages streaming drops each block's first token (BerriAI/litellm#30014)
     container_name: agentic-litellm
     environment:
-      - LITELLM_LOG=INFO                          # full request/response logging with DEBUG, less verbose with INFO, WARNING, ERROR, CRITICAL
-      - LITELLM_FORCE_CHAT_COMPLETION=true        # force /v1/chat/completions
-      - LITELLM_USE_RESPONSES_API=false           # Disable responses API path entirely
-      - VLLM_URL=${VLLM_URL:-http://10.0.0.13:8000/v1} # passed to litellm-config.yaml via os.environ/VLLM_URL
+      <<: *model-env
+      LITELLM_LOG: INFO                           # full request/response logging with DEBUG, less verbose with INFO, WARNING, ERROR, CRITICAL
+      LITELLM_FORCE_CHAT_COMPLETION: "true"       # force /v1/chat/completions
+      LITELLM_USE_RESPONSES_API: "false"          # Disable responses API path entirely
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # No published ports — the sandbox reaches this proxy over the internal docker network
@@ -134,8 +159,20 @@ services:
     # ports:
     #   - "4000:4000/tcp"
     volumes:
-      - ./config/litellm-config.yaml:/app/config.yaml:ro
-    command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
+      - ./config/litellm-config.yaml:/app/config.template.yaml:ro
+    # The stock litellm image can't expand env vars inside model_list model
+    # names, so a small sh wrapper renders the __PLACEHOLDER__ template first.
+    # Vision vars default to the primary model when unset (single-model setup).
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        export VISION_MODEL_ID="$${VISION_MODEL_ID:-$$MODEL_ID}"
+        VISION_MODEL_URL="$${VISION_MODEL_URL:-$$MODEL_URL}" &&
+        sed -e "s|__MODEL_ID__|$$MODEL_ID|g"
+        -e "s|__MODEL_VISION__|$$MODEL_VISION|g"
+        -e "s|__VISION_MODEL_ID__|$$VISION_MODEL_ID|g"
+        /app/config.template.yaml > /tmp/litellm-config.yaml &&
+        exec litellm --config /tmp/litellm-config.yaml --port 4000 --host 0.0.0.0
     restart: unless-stopped
 
 volumes:
