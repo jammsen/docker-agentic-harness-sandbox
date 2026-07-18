@@ -92,7 +92,7 @@ After cloning, the repository already contains this layout:
 ```
 docker-agentic-harness-sandbox/
 ├── Dockerfile
-├── compose.yml             ← defines the `sandbox`, `litellm` and `harness-proxy` services
+├── compose.yml             ← defines the `sandbox`, `litellm` and `reasoning-normalizer` services
 ├── start.sh
 ├── includes/               ← entrypoint function library, one file per concern (sourced from /includes/ at start)
 │   ├── colors.sh           ← colorful echo helpers (e/ei/ew/ee/es) shared by all shell scripts
@@ -107,6 +107,7 @@ docker-agentic-harness-sandbox/
 │   ├── agent-session.sh    ← per-browser-connection: privilege drop, tmux session, tool selection
 │   ├── agent-task.sh       ← one-shot headless Claude task as the agent user (/usr/local/bin/agent-task)
 │   ├── claude-shim.js      ← Claude→LiteLLM image-rewrite proxy (127.0.0.1:4001, pure Node.js stdlib)
+│   ├── reasoning-normalizer.js ← splits deepseek's fused reasoning+content deltas (own compose service, pure Node.js stdlib)
 │   ├── upload-server.js    ← image upload companion server (port 1112, pure Node.js stdlib)
 │   └── reset-sandbox.sh    ← wipe generated state from ./workspace and ./data
 ├── patches/                ← one-off scripts applied to WeTTY at image build time, not present at runtime
@@ -115,10 +116,11 @@ docker-agentic-harness-sandbox/
 │   ├── wetty-csp.js        ← allows the upload-server iframe to load inside WeTTY without being browser-blocked
 │   └── wetty-html.js       ← injects the upload overlay panel (toggle button + slide-in drawer) into WeTTY's page
 ├── tests/                  ← unit tests (run at image build — a failing test aborts the build) + manual integration checks
-│   ├── test-claude-shim.js     ← 16 checks: image hoisting, vision routing, class slots (build-time)
-│   ├── test-wetty-clipboard.js ← exercises the OSC 52 handler injected into WeTTY's bundle (build-time)
-│   └── test-searxng.sh         ← live search check — run manually: docker exec agentic-harness-sandbox bash /tests/test-searxng.sh
-├── harness-proxy/          ← Rust replacement for litellm + claude-shim.js (WIP, issue #10) — see harness-proxy/README.md
+│   ├── test-claude-shim.js         ← 16 checks: image hoisting, vision routing, class slots (build-time)
+│   ├── test-reasoning-normalizer.js ← 7 checks: dual-delta split, qwen no-op, passthrough (build-time)
+│   ├── test-wetty-clipboard.js     ← exercises the OSC 52 handler injected into WeTTY's bundle (build-time)
+│   ├── test-reasoning-normalizer-live.sh ← end-to-end thinking-path check (x20) — run manually against the live stack
+│   └── test-searxng.sh             ← live search check — run manually: docker exec agentic-harness-sandbox bash /tests/test-searxng.sh
 ├── config/
 │   ├── opencode/
 │   │   ├── opencode.json   ← opencode provider/agent config TEMPLATE (rendered from MODEL_* env at start)
@@ -320,11 +322,13 @@ WeTTY is a browser terminal, so you **cannot paste a screenshot into the Claude 
 
 ```
 Claude Code ──Anthropic /v1/messages──▶ claude-shim (127.0.0.1:4001)
-            ──▶ LiteLLM (agentic-litellm:4000) ──▶ vLLM (/v1/chat/completions)
+            ──▶ LiteLLM (agentic-litellm:4000)
+            ──▶ reasoning-normalizer (brain path only) ──▶ vLLM (/v1/chat/completions)
 ```
 
 - **`claude-shim`** (`scripts/claude-shim.js`, started by the entrypoint) is a tiny pure-stdlib proxy. Claude Code's Read tool returns images inside Anthropic `tool_result` blocks, and LiteLLM drops images nested there when translating to chat/completions (OpenAI tool-role messages cannot carry images). The shim lifts each image out of the `tool_result` into a normal user message before forwarding — the placement vLLM accepts — and streams everything else through untouched. Both the shim and the upload server are supervised: if either crashes it restarts automatically (shim within 5 s, upload server within 30 s) without disrupting running agent sessions.
 - **LiteLLM** (the `litellm` service in `compose.yml`) serves the primary model as `brain` and the image-capable one as `vision`, and translates Anthropic↔OpenAI. The stock Anthropic ids (`claude-sonnet-4-5`, `claude-haiku-4-5`) remain as compat aliases for the primary in case Claude Code ever requests a hardcoded id. The backend model is configured as `hosted_vllm/<model>` in `config/litellm-config.yaml` so LiteLLM uses chat/completions (the `openai/` prefix instead routes image requests through the OpenAI Responses API, which vLLM rejects).
+- **`reasoning-normalizer`** (`scripts/reasoning-normalizer.js`, the `reasoning-normalizer` service in `compose.yml`) sits between LiteLLM and the **brain** vLLM. DeepSeek V4 Flash streams the last reasoning token and the first answer token in a single delta with no boundary between them; LiteLLM then misfiles that thinking token into a text block and Claude Code aborts the turn with *"Content block is not a thinking block"*. The normalizer splits any such fused delta into two, so the brain looks like a well-behaved reasoning model. It is a no-op for models that don't fuse the fields (the `vision` path stays direct), and its logic is covered by `tests/test-reasoning-normalizer.js` at build and `tests/test-reasoning-normalizer-live.sh` end-to-end. See [`ideas/deepseek-thinking-block-bug.md`](ideas/deepseek-thinking-block-bug.md) for the full investigation.
 
 The model answering the request must be **vision-capable** for any of this to return a real description — in dual-model setups (`MODEL_VISION=false`) the shim routes image requests to the `VISION_MODEL_*` model automatically, so it is the vision model you should test here. If images come back as generic hallucinations, confirm the model serves vision over chat/completions:
 
@@ -435,6 +439,7 @@ All runtimes and tools are installed at **build time** under the `agent` user �
 | `claude` | `claude.ai/install.sh` | Claude Code CLI — talks to your vLLM model through LiteLLM — [claude.com/claude-code](https://claude.com/claude-code) |
 | LiteLLM proxy | `litellm` service (compose) | Maps Anthropic model aliases onto your vLLM model and translates Anthropic↔OpenAI — [litellm.ai](https://litellm.ai) |
 | `claude-shim.js` | bundled (Node.js stdlib) | Lifts images out of Claude Code `tool_result` blocks so LiteLLM forwards them to vLLM (127.0.0.1:4001) |
+| `reasoning-normalizer.js` | `reasoning-normalizer` service (compose, Node.js stdlib) | Splits DeepSeek's fused reasoning+content stream deltas so LiteLLM emits valid thinking blocks |
 | `agent-task` | bundled | Run a one-shot headless Claude Code task as the `agent` user (`docker exec … agent-task "…"`) |
 | `wetty` | npm global | Browser-based terminal over HTTPS (port 1111) — [npmjs.com/package/wetty](https://www.npmjs.com/package/wetty) |
 | `upload-server.js` | bundled (Node.js stdlib) | Image upload companion page (port 1112) — drag-drop, Ctrl+V paste, file picker |

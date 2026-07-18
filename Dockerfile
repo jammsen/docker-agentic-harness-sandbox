@@ -182,6 +182,10 @@ COPY --chmod=644 scripts/upload-server.js /upload-server.js
 COPY --chmod=755 scripts/upload-server/ /upload-server/
 COPY --chmod=644 scripts/claude-shim.js /claude-shim.js
 RUN SHIM_PATH=/claude-shim.js node /tests/test-claude-shim.js
+# reasoning-normalizer.js runs as its OWN compose service (node:alpine + mounted script), not from
+# this image — it is copied here only so its unit test runs at build, guarding the shipped logic.
+COPY --chmod=644 scripts/reasoning-normalizer.js /reasoning-normalizer.js
+RUN NORMALIZER_PATH=/reasoning-normalizer.js node /tests/test-reasoning-normalizer.js
 COPY --chmod=755 scripts/agent-task.sh /usr/local/bin/agent-task
 COPY --chmod=755 scripts/analyze-image.js /usr/local/bin/analyze-image
 

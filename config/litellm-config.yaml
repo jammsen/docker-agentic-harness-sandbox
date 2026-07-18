@@ -85,3 +85,8 @@ litellm_settings:
   use_responses_api: false
   # Force the Anthropic messages endpoint to translate to chat/completions
   forward_client_headers_to_llm_api: false
+  # Upstream read timeout. Default 600s kills a long single generation: on a slow box a maxed
+  # reasoning+content turn (8k think + 16k content) at ~44 tok/s is ~9 min, so 600s cuts it off
+  # mid-stream ("Timeout on reading data from socket"). 1800s matches the rest of the timeout chain
+  # (claude-shim + reasoning-normalizer UPSTREAM_TIMEOUT_MS, Claude Code API_TIMEOUT_MS).
+  request_timeout: 3600

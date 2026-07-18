@@ -36,6 +36,7 @@ services:
       DEFAULT_TOOL: ${DEFAULT_TOOL:-}           # pass-through from host shell; empty = show menu in browser
       CLAUDE_CODE_NO_FLICKER: "1"               # prevents Claude Code from using alt-screen tricks that break scroll in WeTTY
       LITELLM_UPSTREAM: http://agentic-litellm:4000   # upstream for claude-shim.js (Claude image-rewrite proxy on 127.0.0.1:4001)
+      UPSTREAM_TIMEOUT_MS: "3600000"                  # claude-shim read timeout to litellm — 60m, matches the whole timeout chain
       SEARXNG_URL: http://searxng:8080               # used by OMP's built-in web search (providers.webSearch=searxng) and mcp-searxng
     init: true                                  # tini as PID 1 — reaps zombie child processes
     restart: unless-stopped                     # auto-restart on failure or host reboot
@@ -118,37 +119,86 @@ services:
     volumes:
       - valkey-data:/data
 
-  # harness-proxy — Rust replacement for litellm + claude-shim.js (issue #10).
-  # Translates Anthropic Messages to vLLM/OpenAI, including streaming, images, tools and token counts.
-  # NOT yet wired in: sandbox cutover still has to point ANTHROPIC_BASE_URL at this proxy
-  # and remove the litellm/shim request path in PLAN.md Step 7.
-#  harness-proxy:
-#    build:
-#      context: ./harness-proxy
-#    container_name: agentic-harness-proxy
-#    environment:
-#      - HARNESS_PROXY_BIND=0.0.0.0:4000           # bind for standalone container (network-reachable)
-#      - VLLM_URL=${VLLM_URL:-http://10.0.0.13:8000/v1} # shared override; proxy normalizes trailing /v1
-#      - VLLM_MODEL=qwen3.6-35b
-#    # No published ports — only reachable on the internal docker network, like litellm.
-#    # vLLM (10.0.0.13) is a routable LAN IP, so no extra_hosts/host-gateway needed.
-#    init: true                                    # tini as PID 1 — reaps the process cleanly
-#    restart: unless-stopped
-#    read_only: true                               # static binary writes nothing to disk
-#    user: "65532:65532"                           # non-root (also baked into the image)
-#    security_opt:
-#      - no-new-privileges:true                    # no privilege escalation
-#    cap_drop:
-#      - ALL                                       # drop every Linux capability
-#    pids_limit: 64                                # cap fork bombs
-#    mem_limit: 128m                               # tiny proxy — hard ceiling
+  # reasoning-normalizer — splits DeepSeek's fused reasoning+content delta that makes Claude Code
+  # abort with "Content block is not a thinking block"; byte-for-byte no-op for non-fusing brains
+  # (e.g. Qwen). Full story: ideas/deepseek-thinking-block-bug.md.
+  reasoning-normalizer:
+    image: node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2
+    container_name: agentic-reasoning-normalizer
+    environment:
+      VLLM_UPSTREAM: ${MODEL_URL:-http://10.0.0.55:8888/v1}   # the REAL brain vLLM; only host:port are used
+      NORMALIZER_PORT: "4002"
+      UPSTREAM_TIMEOUT_MS: "3600000"                          # 60m idle read timeout — matches the rest of the chain (see litellm request_timeout)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"                   # covers MODEL_URL pointing at a host-run vLLM
+    volumes:
+      - ./scripts/reasoning-normalizer.js:/reasoning-normalizer.js:ro
+    command: ["node", "/reasoning-normalizer.js"]
+    # No published ports — only litellm reaches it, over the internal docker network.
+    init: true                                    # tini as PID 1 — reaps node cleanly
+    restart: unless-stopped
+    read_only: true                               # pure proxy, writes nothing to disk
+    user: "1000:1000"                             # node:alpine's built-in non-root 'node' user
+    security_opt:
+      - no-new-privileges:true                    # no privilege escalation
+    cap_drop:
+      - ALL                                       # drop every Linux capability
+    pids_limit: 64                                # cap fork bombs
+    mem_limit: 128m                               # tiny proxy — hard ceiling
+
+  # headroom — OPTIONAL context-compression sidecar on the brain path (issue #11), off by default;
+  # enable via .env.example. Rationale, config trade-offs and gates: ideas/headroom-spike-results.md.
+  headroom:
+    build:
+      context: ./headroom
+    image: agentic-headroom
+    container_name: agentic-headroom
+    profiles: ["headroom"]
+    depends_on:
+      - reasoning-normalizer                      # its upstream — brain traffic continues through it
+    environment:
+      OPENAI_TARGET_API_URL: http://agentic-reasoning-normalizer:4002   # forward to the normalizer, not vLLM directly
+      HEADROOM_NO_CCR: "1"                        # no retrieval markers, no injected headroom_retrieve tool
+      HEADROOM_DISABLE_KOMPRESS: "1"              # rules-only even if an ML extra sneaks into the image
+      HEADROOM_STATELESS: "true"                  # no filesystem writes — required for read_only below
+      HEADROOM_UPDATE_CHECK: "off"                # no PyPI phone-home
+      HEADROOM_TELEMETRY: "off"
+      HEADROOM_NO_SUBSCRIPTION_TRACKING: "1"      # we have no Anthropic subscription to poll
+      HEADROOM_REQUEST_TIMEOUT: "3600"            # 60m — matches the rest of the timeout chain
+      HEADROOM_MODE: token                        # cache mode froze all turns (zero compression); token mode may rewrite prior turns
+    # Every flag is load-bearing and --intercept-tool-results must stay OFF (it deletes code
+    # bodies); rationale + measurements in ideas/headroom-spike-results.md.
+    command: ["headroom", "proxy", "--host", "0.0.0.0", "--port", "8787",
+              "--no-rate-limit", "--no-cache", "--no-ccr", "--stateless"]
+    # No published ports — only litellm reaches it, over the internal docker network.
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp                                      # python/uvicorn scratch despite --stateless
+      - /home/headroom/.cache                     # HF tokenizer cache — read-only FS otherwise makes every request re-attempt the download
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256                               # uvicorn worker + threadpools
+    mem_limit: 1g                                 # rules-only proxy; generous headroom for big payload buffers
 
   litellm:
     image: ghcr.io/berriai/litellm:v1.92.0        # latest stable as of 2026-07-16; post-attack (1.82.7/1.82.8 were the compromised PyPI versions)
     # >=1.90.0 required: older /v1/messages streaming drops each block's first token (BerriAI/litellm#30014)
     container_name: agentic-litellm
+    depends_on:
+      - reasoning-normalizer                      # brain path routes through it (no-op unless the brain fuses reasoning+content)
     environment:
       <<: *model-env
+      # Send the brain path through the reasoning-normalizer above so the default DeepSeek brain is
+      # covered. This is a NO-OP for a brain that doesn't fuse reasoning+content deltas, so it's safe
+      # to leave regardless of which model the brain is; to bypass it, set MODEL_URL back to your
+      # vLLM. Only MODEL_URL is overridden — VISION_MODEL_URL stays direct (the vision model doesn't
+      # fuse). The sandbox's own MODEL_URL (for opencode/omp, which talk to vLLM directly) is untouched.
+      # LITELLM_BRAIN_URL: hook for the optional headroom sidecar (issue #11), see .env.example.
+      MODEL_URL: ${LITELLM_BRAIN_URL:-http://agentic-reasoning-normalizer:4002/v1}
       LITELLM_LOG: INFO                           # full request/response logging with DEBUG, less verbose with INFO, WARNING, ERROR, CRITICAL
       LITELLM_FORCE_CHAT_COMPLETION: "true"       # force /v1/chat/completions
       LITELLM_USE_RESPONSES_API: "false"          # Disable responses API path entirely
