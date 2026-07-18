@@ -22,6 +22,7 @@ services:
       context: .
       args:
         PYTHON_VERSION: "3.13"                  # override here to change the Python version
+        APT_MIRROR: ${APT_MIRROR:-}             # optional apt mirror for faster builds, see .env.example
     container_name: agentic-harness-sandbox
     extra_hosts:
       - "host.docker.internal:host-gateway"

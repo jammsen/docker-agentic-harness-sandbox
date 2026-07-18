@@ -17,9 +17,23 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH="/home/agent/.local/bin:/home/agent/.cargo/bin:/home/agent/.opencode/bin:${PATH}"
 
 
+# Optional apt mirror (full URL incl. /ubuntu/, e.g. https://mirror.netcologne.de/ubuntu/);
+# empty = stock archive/security.ubuntu.com. Set via .env, see .env.example.
+ARG APT_MIRROR=""
+# ForceIPv4: apt's IPv6 attempts stall behind Docker Desktop/WSL2 NAT. docker-clean would empty
+# the .deb cache after every install, defeating the BuildKit cache mounts on the RUNs below.
+RUN if [ -n "$APT_MIRROR" ]; then \
+      sed -i -E "s#https?://(archive|security)\.ubuntu\.com/ubuntu/?#$APT_MIRROR#g" /etc/apt/sources.list.d/ubuntu.sources; \
+    fi \
+    && printf 'Acquire::ForceIPv4 "true";\n' > /etc/apt/apt.conf.d/99force-ipv4 \
+    && rm -f /etc/apt/apt.conf.d/docker-clean \
+    && printf 'Binary::apt::APT::Keep-Downloaded-Packages "true";\n' > /etc/apt/apt.conf.d/99keep-debs
+
 # Install basic tools
-# hadolint ignore=DL3008 # Base-Image Ubuntu 26.04 is already pinned
-RUN apt-get update && apt-get install -y --no-install-recommends --no-install-suggests \
+# hadolint ignore=DL3008,DL3009 # Base-Image Ubuntu 26.04 is already pinned
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends --no-install-suggests \
     build-essential \
     ca-certificates \
     curl \
@@ -47,15 +61,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends --no-install-su
     wget \
     zip \
     && apt-get autoremove -y \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+# clean/lists-rm contradict the apt cache mounts (both dirs live outside the image, shared across builds)
+#   && apt-get clean \
+#   && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /tmp/* /var/tmp/*
 
 # Node.js — system-wide, available for workspace projects
-# hadolint ignore=DL3008 # Base-Image Ubuntu 26.04 is already pinned
-RUN apt-get update && apt-get install -y --no-install-recommends --no-install-suggests nodejs npm \
+# hadolint ignore=DL3008,DL3009 # Base-Image Ubuntu 26.04 is already pinned
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends --no-install-suggests nodejs npm \
     && apt-get autoremove -y \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+# clean/lists-rm contradict the apt cache mounts (both dirs live outside the image, shared across builds)
+#   && apt-get clean \
+#   && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /tmp/* /var/tmp/*
 
 # WeTTY — browser-based terminal served on port 1111
 # mcp-searxng — pre-installed so OMP (which eagerly starts MCP servers at launch)
@@ -101,8 +121,10 @@ RUN mkdir -p /etc/wetty \
     && chmod 644 /etc/wetty/key.pem /etc/wetty/cert.pem
 
 # Chromium headless system libraries — required for Playwright
-# hadolint ignore=DL3008 # Base-Image Ubuntu 26.04 is already pinned
-RUN apt-get update && apt-get install -y --no-install-recommends --no-install-suggests \
+# hadolint ignore=DL3008,DL3009 # Base-Image Ubuntu 26.04 is already pinned
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends --no-install-suggests \
     fonts-liberation \
     fonts-noto-color-emoji \
     libasound2t64 \
@@ -128,8 +150,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends --no-install-su
     libxrandr2 \
     xdg-utils \
     && apt-get autoremove -y \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+# clean/lists-rm contradict the apt cache mounts (both dirs live outside the image, shared across builds)
+#   && apt-get clean \
+#   && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /tmp/* /var/tmp/*
 
 # Ubuntu 26.04 ships with a default 'ubuntu' user at 1000:1000 — reuse it
 RUN usermod -l agent ubuntu && \
