@@ -1,0 +1,92 @@
+diff --git a/core/schemas/mux.go b/core/schemas/mux.go
+index 6678fde..8e677af 100644
+--- a/core/schemas/mux.go
++++ b/core/schemas/mux.go
+@@ -1698,8 +1698,11 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
+ 	hasReasoning := delta.Reasoning != nil && *delta.Reasoning != ""
+ 
+ 	// Create output items if we have content OR reasoning (for reasoning-only models)
+-	if hasContent || (hasReasoning && !state.TextItemAdded) {
+-		// Text content delta (or reasoning-only response)
++	// Reasoning must NOT open the text item: doing so attributed thinking deltas to a text
++	// block. Reasoning gets its own reasoning item below, which the Anthropic surface maps to
++	// a thinking content_block_start.
++	if hasContent {
++		// Text content delta
+ 		if !state.TextItemAdded {
+ 			// Add text item if not already added
+ 			outputIndex := 0
+@@ -1954,11 +1957,43 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
+ 	}
+ 
+ 	if delta.Reasoning != nil && *delta.Reasoning != "" {
++		// Open a reasoning item before its first delta. Without this the delta carried no item
++		// ID, so reverseStreamItemKey fell back to "oi:<index>", never matched a key registered
++		// by output_item.added, and blockIndexFor allocated a fresh index — emitting a
++		// content_block_delta for a block whose content_block_start was never sent. Strict SDKs
++		// (Claude Code) abort the turn on that orphan block.
++		reasoningItemID := state.ItemIDs["reasoning"]
++		if reasoningItemID == "" {
++			if state.MessageID == nil {
++				reasoningItemID = "reasoning_0"
++			} else {
++				reasoningItemID = fmt.Sprintf("msg_%s_reasoning_0", *state.MessageID)
++			}
++			state.ItemIDs["reasoning"] = reasoningItemID
++
++			reasoningType := ResponsesMessageTypeReasoning
++			reasoningRole := ResponsesInputMessageRoleAssistant
++			responses = append(responses, &BifrostResponsesStreamResponse{
++				Type:           ResponsesStreamResponseTypeOutputItemAdded,
++				SequenceNumber: state.SequenceNumber,
++				OutputIndex:    Ptr(0),
++				ContentIndex:   Ptr(0),
++				Item: &ResponsesMessage{
++					ID:   &reasoningItemID,
++					Type: &reasoningType,
++					Role: &reasoningRole,
++				},
++				ExtraFields: cr.ExtraFields,
++			})
++			state.SequenceNumber++
++		}
++
+ 		// Reasoning/thought content delta (for models that support reasoning)
+ 		response := &BifrostResponsesStreamResponse{
+ 			Type:           ResponsesStreamResponseTypeReasoningSummaryTextDelta,
+ 			SequenceNumber: state.SequenceNumber,
+ 			OutputIndex:    Ptr(0),
++			ItemID:         &reasoningItemID,
+ 			Delta:          delta.Reasoning,
+ 			ExtraFields:    cr.ExtraFields,
+ 		}
+@@ -1984,6 +2019,29 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
+ 		terminalEventType, terminalStatus, terminalIncompleteDetails := responsesTerminalFromChatFinishReason(choice.FinishReason)
+ 
+ 		// Close text item if still open (regardless of whether it has content, to support reasoning-only responses)
++		// Close the reasoning item opened for reasoning deltas, so its content_block_start has a
++		// paired content_block_stop. Without this the thinking block stays open for the whole
++		// stream.
++		if reasoningItemID := state.ItemIDs["reasoning"]; reasoningItemID != "" && state.ItemIDs["reasoning_done"] == "" {
++			state.ItemIDs["reasoning_done"] = "1"
++			reasoningType := ResponsesMessageTypeReasoning
++			reasoningRole := ResponsesInputMessageRoleAssistant
++			responses = append(responses, &BifrostResponsesStreamResponse{
++				Type:           ResponsesStreamResponseTypeOutputItemDone,
++				SequenceNumber: state.SequenceNumber,
++				OutputIndex:    Ptr(0),
++				ContentIndex:   Ptr(0),
++				ItemID:         &reasoningItemID,
++				Item: &ResponsesMessage{
++					ID:   &reasoningItemID,
++					Type: &reasoningType,
++					Role: &reasoningRole,
++				},
++				ExtraFields: cr.ExtraFields,
++			})
++			state.SequenceNumber++
++		}
++
+ 		if state.TextItemAdded && !state.TextItemClosed {
+ 			outputIndex := 0
+ 			itemID := state.ItemIDs["text"]

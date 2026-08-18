@@ -89,7 +89,7 @@ When asked to analyze or describe an image at a file path, run the `analyze-imag
 analyze-image /path/to/image.png "your question or focus here"
 ```
 
-Pass the user's intent as the second argument. If no specific focus is given, omit it and the default description prompt is used. Do not attempt to read the raw binary file, install packages, or write Python scripts to inspect the image. The `analyze-image` command handles vision analysis directly and returns a text description.
+Pass the user's intent as the second argument. If no specific focus is given, omit it and the default description prompt is used. Do not attempt to read the raw binary file, install packages, or write Python scripts to inspect the image. The `analyze-image` command handles vision analysis directly and returns a text description. This is the ONLY permitted vision path: never inline image bytes or base64 into the conversation — the vision model's context (131k) is far smaller than the brain's, and `analyze-image` keeps the conversation out of the vision call by design.
 
 ## Skills
 

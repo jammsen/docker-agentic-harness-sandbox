@@ -421,15 +421,16 @@ engines:
     shortcut: aps
     disabled: true
 
-  # Requires Tor
-  - name: ahmia
-    engine: ahmia
-    # Might do up to two requests to perform a search.
-    # Since Tor is already slow by nature, the timeout is set very high.
-    timeout: 20.0
-    categories: onions
-    enable_http: true
-    shortcut: ah
+  # Requires Tor — disabled in this sandbox (no Tor daemon), otherwise it fails to load on every
+  # startup ("loading engine ahmia failed"). Uncomment the block below to re-enable if you run Tor.
+  # - name: ahmia
+  #   engine: ahmia
+  #   # Might do up to two requests to perform a search.
+  #   # Since Tor is already slow by nature, the timeout is set very high.
+  #   timeout: 20.0
+  #   categories: onions
+  #   enable_http: true
+  #   shortcut: ah
 
   - name: anaconda
     engine: xpath
@@ -2420,19 +2421,20 @@ engines:
     disabled: true
     inactive: true
 
-  # Requires Tor
-  - name: torch
-    engine: xpath
-    paging: true
-    search_url:
-      http://xmh57jrknzkhv6y3ls3ubitzfqnkrwxhopf5aygthi7d6rplyvk3noyd.onion/cgi-bin/omega/omega?P={query}&DEFAULTOP=and
-    results_xpath: //table//tr
-    url_xpath: ./td[2]/a
-    title_xpath: ./td[2]/b
-    content_xpath: ./td[2]/small
-    categories: onions
-    enable_http: true
-    shortcut: tch
+  # Requires Tor — disabled in this sandbox (no Tor daemon), otherwise it fails to load on every
+  # startup ("loading engine torch failed"). Uncomment the block below to re-enable if you run Tor.
+  # - name: torch
+  #   engine: xpath
+  #   paging: true
+  #   search_url:
+  #     http://xmh57jrknzkhv6y3ls3ubitzfqnkrwxhopf5aygthi7d6rplyvk3noyd.onion/cgi-bin/omega/omega?P={query}&DEFAULTOP=and
+  #   results_xpath: //table//tr
+  #   url_xpath: ./td[2]/a
+  #   title_xpath: ./td[2]/b
+  #   content_xpath: ./td[2]/small
+  #   categories: onions
+  #   enable_http: true
+  #   shortcut: tch
 
   # TubeArchivist is a self-hosted Youtube archivist software.
   # https://docs.searxng.org/dev/engines/online/tubearchivist.html

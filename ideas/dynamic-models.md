@@ -53,12 +53,11 @@ VISION_MODEL_URL / _ID / _NAME / _CONTEXT / _MAX_TOKENS               = the eyes
 - Tests: `tests/test-claude-shim.js` (stub upstream, 16 checks covering
   hoist + routing + class-slot + no-reroute cases; runs at image build).
 
-Not touched: `harness-proxy/` (in development on its own branch). Note for
-its cutover (Step 7): the proxy currently serves exactly one upstream model,
-so the vision routing above has to be ported (or consciously dropped) when
-litellm + claude-shim are removed. The proxy's own `VLLM_URL`/`VLLM_MODEL`
-env vars are untouched by the legacy-fallback removal; its compose block
-can map `VLLM_URL=$MODEL_URL` / `VLLM_MODEL=$MODEL_ID` at cutover.
+Historical note: `harness-proxy/` (a Rust litellm+shim replacement) was removed on the
+`feat/bifrost-replacement-test` branch after evaluation — it never triggered reasoning upstream,
+so it produced no thinking blocks. The code remains in git history. See
+`ideas/deepseek-thinking-block-bug.md` for why it was dropped and what replaced the gateway fix
+(the `reasoning-normalizer` service).
 
 ## What's on the branch, file by file
 

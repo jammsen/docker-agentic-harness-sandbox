@@ -17,9 +17,32 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH="/home/agent/.local/bin:/home/agent/.cargo/bin:/home/agent/.opencode/bin:${PATH}"
 
 
+# Optional apt mirror (full URL incl. /ubuntu/, e.g. https://mirror.netcologne.de/ubuntu/);
+# empty = stock archive/security.ubuntu.com. Set via .env, see .env.example.
+ARG APT_MIRROR=""
+# ForceIPv4: apt's IPv6 attempts stall behind Docker Desktop/WSL2 NAT. docker-clean would empty
+# the .deb cache after every install, defeating the BuildKit cache mounts on the RUNs below.
+RUN printf 'Acquire::ForceIPv4 "true";\n' > /etc/apt/apt.conf.d/99force-ipv4 \
+    && rm -f /etc/apt/apt.conf.d/docker-clean \
+    && printf 'Binary::apt::APT::Keep-Downloaded-Packages "true";\n' > /etc/apt/apt.conf.d/99keep-debs
+
+# Bootstrap TLS trust from the stock (GPG-verified, http) archive BEFORE the mirror switch, so
+# APT_MIRROR may be https — only this one package ever rides plain http (apt http-path bugs like
+# CVE-2019-3462 are the threat model; everything after goes TLS).
+# hadolint ignore=DL3008,DL3009
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends --no-install-suggests ca-certificates
+
+RUN if [ -n "$APT_MIRROR" ]; then \
+      sed -i -E "s#https?://(archive|security)\.ubuntu\.com/ubuntu/?#$APT_MIRROR#g" /etc/apt/sources.list.d/ubuntu.sources; \
+    fi
+
 # Install basic tools
-# hadolint ignore=DL3008 # Base-Image Ubuntu 26.04 is already pinned
-RUN apt-get update && apt-get install -y --no-install-recommends --no-install-suggests \
+# hadolint ignore=DL3008,DL3009 # Base-Image Ubuntu 26.04 is already pinned
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends --no-install-suggests \
     build-essential \
     ca-certificates \
     curl \
@@ -47,15 +70,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends --no-install-su
     wget \
     zip \
     && apt-get autoremove -y \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+# clean/lists-rm contradict the apt cache mounts (both dirs live outside the image, shared across builds)
+#   && apt-get clean \
+#   && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /tmp/* /var/tmp/*
 
 # Node.js — system-wide, available for workspace projects
-# hadolint ignore=DL3008 # Base-Image Ubuntu 26.04 is already pinned
-RUN apt-get update && apt-get install -y --no-install-recommends --no-install-suggests nodejs npm \
+# hadolint ignore=DL3008,DL3009 # Base-Image Ubuntu 26.04 is already pinned
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends --no-install-suggests nodejs npm \
     && apt-get autoremove -y \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+# clean/lists-rm contradict the apt cache mounts (both dirs live outside the image, shared across builds)
+#   && apt-get clean \
+#   && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /tmp/* /var/tmp/*
 
 # WeTTY — browser-based terminal served on port 1111
 # mcp-searxng — pre-installed so OMP (which eagerly starts MCP servers at launch)
@@ -101,8 +130,10 @@ RUN mkdir -p /etc/wetty \
     && chmod 644 /etc/wetty/key.pem /etc/wetty/cert.pem
 
 # Chromium headless system libraries — required for Playwright
-# hadolint ignore=DL3008 # Base-Image Ubuntu 26.04 is already pinned
-RUN apt-get update && apt-get install -y --no-install-recommends --no-install-suggests \
+# hadolint ignore=DL3008,DL3009 # Base-Image Ubuntu 26.04 is already pinned
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends --no-install-suggests \
     fonts-liberation \
     fonts-noto-color-emoji \
     libasound2t64 \
@@ -128,8 +159,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends --no-install-su
     libxrandr2 \
     xdg-utils \
     && apt-get autoremove -y \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+# clean/lists-rm contradict the apt cache mounts (both dirs live outside the image, shared across builds)
+#   && apt-get clean \
+#   && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /tmp/* /var/tmp/*
 
 # Ubuntu 26.04 ships with a default 'ubuntu' user at 1000:1000 — reuse it
 RUN usermod -l agent ubuntu && \
@@ -182,6 +215,10 @@ COPY --chmod=644 scripts/upload-server.js /upload-server.js
 COPY --chmod=755 scripts/upload-server/ /upload-server/
 COPY --chmod=644 scripts/claude-shim.js /claude-shim.js
 RUN SHIM_PATH=/claude-shim.js node /tests/test-claude-shim.js
+# reasoning-normalizer.js runs as its OWN compose service (node:alpine + mounted script), not from
+# this image — it is copied here only so its unit test runs at build, guarding the shipped logic.
+COPY --chmod=644 scripts/reasoning-normalizer.js /reasoning-normalizer.js
+RUN NORMALIZER_PATH=/reasoning-normalizer.js node /tests/test-reasoning-normalizer.js
 COPY --chmod=755 scripts/agent-task.sh /usr/local/bin/agent-task
 COPY --chmod=755 scripts/analyze-image.js /usr/local/bin/analyze-image
 
