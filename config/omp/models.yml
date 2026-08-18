@@ -1,31 +1,6 @@
-# TEMPLATE — rendered by entrypoint.sh (envsubst) into ~/.omp/agent/models.yml.
-# ${MODEL_*} / ${VISION_MODEL_*} come from compose.yml (x-model-env).
-providers:
-  vllm:
-    baseUrl: "${MODEL_URL}"
-    apiKey: "dummy"
-    api: openai-completions
-    auth: apiKey
-    models:
-      - id: ${MODEL_ID}
-        name: "${MODEL_NAME}"
-        contextWindow: ${MODEL_CONTEXT}
-        maxTokens: ${MODEL_MAX_TOKENS}
-        # Aggressive context trim to prevent hanging at large contexts:
-        # OMP will refuse to send a request that would exceed contextWindow,
-        # so keeping maxTokens conservative leaves headroom for the prompt.
-        systemPromptSize: 4096
-  # Vision endpoint — same as the primary in single-model setups; switch to
-  # it in OMP's model picker when working with images and the primary model
-  # is text-only.
-  vision:
-    baseUrl: "${VISION_MODEL_URL}"
-    apiKey: "dummy"
-    api: openai-completions
-    auth: apiKey
-    models:
-      - id: ${VISION_MODEL_ID}
-        name: "${VISION_MODEL_NAME}"
-        contextWindow: ${VISION_MODEL_CONTEXT}
-        maxTokens: ${VISION_MODEL_MAX_TOKENS}
-        systemPromptSize: 4096
+# TEMPLATE — rendered by render-models into ~/.omp/agent/models.yml. `providers` is filled from
+# the model catalog (~/.config/models/models.yml, managed by the model-config wizard): one provider
+# per catalog server (keyed by server name), all its selected models, systemPromptSize 4096 each.
+# Aggressive context trim: OMP refuses a request that would exceed contextWindow, so conservative
+# maxTokens leaves headroom for the prompt.
+providers: {}

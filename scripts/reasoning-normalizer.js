@@ -16,8 +16,17 @@
 //
 //   Everything else — non-SSE responses, other paths, all requests — is proxied verbatim.
 //
-// Pure Node stdlib (no deps), matching claude-shim.js. Listens on 127.0.0.1:NORMALIZER_PORT and
-// forwards to VLLM_UPSTREAM.
+// Second job — model ROUTER for the catalog (config/models/models.yml, see
+//   ideas/model-catalog-configurator.md): LiteLLM sends every request here with the alias the tool
+//   asked for; we resolve it against models.json (rendered from the yaml by the sandbox) to a real
+//   model id + server URL, rewrite `model`, and forward. This is what lets the wizard change
+//   servers/roles without restarting anything: the file is re-read whenever its mtime changes.
+//   Aliases: brain/opus/fable/claude-* -> roles.brain, vision/sonnet/haiku -> roles.vision,
+//   "<server>/<id>" explicit, "<id>" when exactly one server serves it. Unknown -> 404 JSON.
+//   Without MODELS_FILE (or while it doesn't exist yet) it behaves as before: single VLLM_UPSTREAM.
+//
+// Pure Node stdlib (no deps), matching claude-shim.js. Listens on 0.0.0.0:NORMALIZER_PORT and
+// forwards to the resolved server (or VLLM_UPSTREAM).
 
 const http = require('http');
 const https = require('https');
@@ -26,6 +35,53 @@ const { URL } = require('url');
 const PORT = parseInt(process.env.NORMALIZER_PORT || '4002', 10);
 const UPSTREAM_TIMEOUT_MS = parseInt(process.env.UPSTREAM_TIMEOUT_MS || '600000', 10); // LLM inference is slow
 const UPSTREAM = new URL(process.env.VLLM_UPSTREAM || 'http://127.0.0.1:8000');
+const MODELS_FILE = process.env.MODELS_FILE || '';   // e.g. /config/models/models.json; empty = legacy single upstream
+const fs = require('fs');
+
+// --- catalog (models.json) — re-read on mtime change, never crashes the proxy on a bad file -----
+const BRAIN_ALIASES  = new Set(['brain', 'opus', 'fable', 'claude-sonnet-4-5', 'claude-haiku-4-5']);
+const VISION_ALIASES = new Set(['vision', 'sonnet', 'haiku']);
+let catalog = null, catalogMtime = 0, catalogWarned = false;
+function loadCatalog() {
+  if (!MODELS_FILE) return null;
+  let st;
+  try { st = fs.statSync(MODELS_FILE); } catch { catalog = null; return null; }
+  if (st.mtimeMs === catalogMtime && catalog) return catalog;
+  try {
+    const raw = JSON.parse(fs.readFileSync(MODELS_FILE, 'utf8'));
+    const servers = raw.servers || {}, roles = raw.roles || {};
+    const byId = {};                                    // id -> [server, ...]
+    for (const [srv, def] of Object.entries(servers)) {
+      for (const id of Object.keys(def.models || {})) (byId[id] ||= []).push(srv);
+    }
+    catalog = { servers, roles, byId }; catalogMtime = st.mtimeMs; catalogWarned = false;
+    console.log(`> catalog loaded: ${Object.keys(servers).length} server(s), ${Object.keys(byId).length} model id(s), brain=${roles.brain} vision=${roles.vision}`);
+  } catch (e) {
+    if (!catalogWarned) { console.error(`> catalog unreadable (${e.message}) — keeping previous / legacy upstream`); catalogWarned = true; }
+  }
+  return catalog;
+}
+// resolve(alias) -> { id, url } | null. `server/id` wins over a bare id that happens to contain '/'.
+function resolve(alias, cat) {
+  if (!cat || typeof alias !== 'string') return null;
+  const ref = BRAIN_ALIASES.has(alias) ? cat.roles.brain
+            : VISION_ALIASES.has(alias) ? (cat.roles.vision || cat.roles.brain)   // vision is optional: brain answers
+            : alias;
+  if (!ref) return null;
+  const slash = ref.indexOf('/');
+  if (slash > 0) {
+    const srv = ref.slice(0, slash), id = ref.slice(slash + 1);
+    if (cat.servers[srv]?.models?.[id]) return { id, url: new URL(cat.servers[srv].url) };
+  }
+  const owners = cat.byId[ref] || [];
+  if (owners.length === 1) return { id: ref, url: new URL(cat.servers[owners[0]].url) };
+  return null;                                          // unknown, or ambiguous (needs server/id)
+}
+// LiteLLM's api_base ends in /v1 and so does every catalog url: join "<url path>" + req.url minus "/v1".
+function targetPath(base, reqUrl) {
+  const p = reqUrl.startsWith('/v1/') ? reqUrl.slice(3) : reqUrl;
+  return base.pathname.replace(/\/$/, '') + p;
+}
 
 // Split one `data: {...}` line into reasoning-only + content-only lines when it carries both.
 // Returns null when the line needs no rewrite, so the common path forwards bytes untouched.
@@ -51,20 +107,40 @@ const server = http.createServer((req, res) => {
   const chunks = [];
   req.on('data', (c) => chunks.push(c));
   req.on('end', () => {
-    const body = Buffer.concat(chunks);
-    const headers = { ...req.headers, host: UPSTREAM.host };
+    let body = Buffer.concat(chunks);
+    let target = UPSTREAM, path = req.url;
+
+    // Catalog routing: rewrite `model` and pick the server. Only JSON bodies with a model field.
+    const cat = loadCatalog();
+    if (cat) {
+      let parsed = null;
+      try { parsed = JSON.parse(body.toString('utf8')); } catch { /* not JSON — forward as-is */ }
+      if (parsed && typeof parsed.model === 'string') {
+        const hit = resolve(parsed.model, cat);
+        if (!hit) {
+          res.writeHead(404, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: { type: 'unknown_model',
+            message: `model '${parsed.model}' is not in the catalog (config/models/models.yml) — run the model configuration` } }));
+          return;
+        }
+        if (parsed.model !== hit.id) { parsed.model = hit.id; body = Buffer.from(JSON.stringify(parsed)); }
+        target = hit.url; path = targetPath(hit.url, req.url);
+      }
+    }
+
+    const headers = { ...req.headers, host: target.host, 'content-length': String(body.length) };
     delete headers['transfer-encoding'];
 
-    const transport = UPSTREAM.protocol === 'https:' ? https : http;
-    const defaultPort = UPSTREAM.protocol === 'https:' ? 443 : 80;
+    const transport = target.protocol === 'https:' ? https : http;
+    const defaultPort = target.protocol === 'https:' ? 443 : 80;
     let timedOut = false;
 
     const upstreamReq = transport.request(
       {
-        hostname: UPSTREAM.hostname,
-        port: parseInt(UPSTREAM.port || defaultPort, 10),
+        hostname: target.hostname,
+        port: parseInt(target.port || defaultPort, 10),
         method: req.method,
-        path: req.url,
+        path,
         headers,
       },
       (upstreamRes) => {
@@ -110,5 +186,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`> reasoning-normalizer listening on 0.0.0.0:${PORT} → ${UPSTREAM.origin} (splitting dual reasoning+content deltas)`);
+  const mode = MODELS_FILE ? `routing by catalog ${MODELS_FILE} (fallback ${UPSTREAM.origin})` : `→ ${UPSTREAM.origin}`;
+  console.log(`> reasoning-normalizer listening on 0.0.0.0:${PORT} ${mode} (splitting dual reasoning+content deltas)`);
+  loadCatalog();
 });

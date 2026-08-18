@@ -25,32 +25,61 @@ if [[ -z "${TMUX:-}" ]]; then
         SESSION_LABELS+=("$_name  ($_status)")
     done < <(tmux list-sessions -F '#{session_name} #{?session_attached,Attached,Detached}' 2>/dev/null || true)
 
+    # Model catalog gate: no brain/vision configured -> nothing else makes sense (every session
+    # and tool would run into gateway errors), so sessions are shown in RED and disabled, and the
+    # model configuration is the default. The catalog is global (one file, all sessions), so the
+    # wizard lives here on the first screen, not per session.
+    RED=$'\033[0;31m'; NC=$'\033[0m'
+    _models_ok() { MODELS_STATUS="$(model-config status 2>/dev/null)"; }
+
     # Present picker with re-prompt on invalid input. Always shown — even with
     # no sessions — so the terminal has time to size correctly before tmux
     # starts. Attach is multiattach by default; window-size latest (tmux.conf)
     # sizes the session to the most recently active client.
-    _MAX=$((${#SESSION_IDS[@]} + 1))
+    _NEW=$((${#SESSION_IDS[@]} + 1))
+    _WIZ=$((${#SESSION_IDS[@]} + 2))
     while true; do
+        if _models_ok; then MODELS_OK=1; else MODELS_OK=0; fi
+        echo ""
+        if [[ $MODELS_OK -eq 1 ]]; then
+            echo "$MODELS_STATUS"
+            _DEF=1
+        else
+            echo "${RED}>>> No usable model configuration — set up models first (option $_WIZ).${NC}"
+            _DEF=$_WIZ
+        fi
         echo ""
         echo "Existing sessions:"
         for i in "${!SESSION_LABELS[@]}"; do
-            if [[ $i -eq 0 ]]; then
+            if [[ $MODELS_OK -eq 0 ]]; then
+                echo "  $((i+1)). ${RED}${SESSION_LABELS[$i]}  (needs model configuration)${NC}"
+            elif [[ $i -eq 0 ]]; then
                 echo "  $((i+1)). ${SESSION_LABELS[$i]}  (default)"
             else
                 echo "  $((i+1)). ${SESSION_LABELS[$i]}"
             fi
         done
-        echo "  $_MAX. Start a new session"
+        if [[ $MODELS_OK -eq 0 ]]; then
+            echo "  $_NEW. ${RED}Start a new session  (needs model configuration)${NC}"
+            echo "  $_WIZ. Model configuration  (default)"
+        else
+            echo "  $_NEW. Start a new session"
+            echo "  $_WIZ. Model configuration"
+        fi
         echo ""
-        read -r -p "Enter selection [1]: " _SEL
-        _SEL="${_SEL:-1}"
+        read -r -p "Enter selection [$_DEF]: " _SEL
+        _SEL="${_SEL:-$_DEF}"
 
-        if [[ "$_SEL" =~ ^[0-9]+$ ]] && [[ "$_SEL" -ge 1 ]] && [[ "$_SEL" -le "${#SESSION_IDS[@]}" ]]; then
+        if [[ "$_SEL" =~ ^[0-9]+$ ]] && [[ "$_SEL" -eq "$_WIZ" ]]; then
+            model-config || true          # returns here; the gate is re-evaluated at the top of the loop
+        elif [[ "$_SEL" =~ ^[0-9]+$ ]] && [[ "$_SEL" -ge 1 ]] && [[ "$_SEL" -le "$_NEW" ]] && [[ $MODELS_OK -eq 0 ]]; then
+            echo "  ${RED}Set up models first (option $_WIZ).${NC}"
+        elif [[ "$_SEL" =~ ^[0-9]+$ ]] && [[ "$_SEL" -ge 1 ]] && [[ "$_SEL" -le "${#SESSION_IDS[@]}" ]]; then
             exec tmux attach-session -t "${SESSION_IDS[$((${_SEL}-1))]}"
-        elif [[ "$_SEL" =~ ^[0-9]+$ ]] && [[ "$_SEL" -eq "$_MAX" ]]; then
+        elif [[ "$_SEL" =~ ^[0-9]+$ ]] && [[ "$_SEL" -eq "$_NEW" ]]; then
             exec tmux new-session -s "sandbox-started-$(date +%Y-%m-%d-%H-%M-%S)" "$0"
         else
-            echo "  Invalid — enter a number between 1 and $_MAX"
+            echo "  Invalid — enter a number between 1 and $_WIZ"
         fi
     done
 fi
@@ -64,6 +93,7 @@ fi
 read -ra AVAILABLE_TOOLS <<< "$AVAILABLE_TOOLS_ENV"
 
 # Select tool — skip menu if DEFAULT_TOOL is set or only one tool exists.
+# (The model-catalog gate sits on the first screen: this menu is only reachable when configured.)
 TOOL=""
 if [[ -n "${DEFAULT_TOOL:-}" ]]; then
     for _t in "${AVAILABLE_TOOLS[@]}"; do

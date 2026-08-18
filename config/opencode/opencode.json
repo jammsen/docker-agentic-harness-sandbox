@@ -1,46 +1,7 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "vllm": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "vLLM",
-      "options": {
-        "baseURL": "${MODEL_URL}"
-      },
-      "models": {
-        "${MODEL_ID}": {
-          "name": "${MODEL_NAME}",
-          "limit": {
-            "context": ${MODEL_CONTEXT},
-            "output": ${MODEL_MAX_TOKENS}
-          },
-          "options": {
-            "preserve_thinking": false
-          }
-        }
-      }
-    },
-    "vision": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Vision",
-      "options": {
-        "baseURL": "${VISION_MODEL_URL}"
-      },
-      "models": {
-        "${VISION_MODEL_ID}": {
-          "name": "${VISION_MODEL_NAME}",
-          "limit": {
-            "context": ${VISION_MODEL_CONTEXT},
-            "output": ${VISION_MODEL_MAX_TOKENS}
-          },
-          "options": {
-            "preserve_thinking": false
-          }
-        }
-      }
-    }
-  },
-  "model": "vllm/${MODEL_ID}",
+  "provider": {},
+  "model": "",
   "autoshare": false,
   "mcp": {
     "searxng": {
@@ -61,7 +22,7 @@
         "webfetch": "ask",
         "websearch": "allow"
       },
-      "maxTokens": ${MODEL_MAX_TOKENS}
+      "maxTokens": 16384
     }
   }
 }

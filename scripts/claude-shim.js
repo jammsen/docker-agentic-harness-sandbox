@@ -12,9 +12,12 @@
 //   placeholder left in the tool_result so the tool-call/result pairing stays valid. Everything
 //   else — including streaming SSE responses and all non-/v1/messages paths — is proxied verbatim.
 //
-//   Second job (dual-model setups): when the primary model is text-only (MODEL_VISION=false),
-//   a request whose NEWEST message carries an image is rerouted to LiteLLM's `vision` model
-//   entry (VISION_MODEL_* in compose.yml) so a text-only brain never hallucinates over pixels.
+//   Second job (dual-model setups): when the brain is text-only (catalog: brain model has
+//   vision=false), a request whose NEWEST message carries an image is rerouted to the `vision`
+//   alias so a text-only brain never hallucinates over pixels. Brain/vision come from the model
+//   catalog (~/.config/models/models.json, written by the model-config wizard) and are re-read
+//   whenever that file changes — no restart needed. Env MODEL_VISION/MODEL_ID/VISION_MODEL_ID
+//   remain the fallback when there is no catalog.
 //   Images that only sit in OLDER turns don't hijack the routing: the user's model choice is
 //   kept and the stale image blocks are replaced with text placeholders — the vision model's
 //   earlier textual analysis is already in the history, which is what the brain works from.
@@ -32,20 +35,54 @@ const UPSTREAM_TIMEOUT_MS = parseInt(process.env.UPSTREAM_TIMEOUT_MS || '600000'
 const UPSTREAM = new URL(process.env.LITELLM_UPSTREAM || 'http://agentic-litellm:4000');
 
 // Vision fallback config — routing rules are described under "Second job" above.
-const PRIMARY_HAS_VISION = String(process.env.MODEL_VISION || 'true').toLowerCase() !== 'false';
 const VISION_MODEL_ALIAS = process.env.VISION_MODEL_ALIAS || 'vision';
+const MODELS_FILE = process.env.MODELS_FILE || `${process.env.HOME || '/home/agent'}/.config/models/models.json`;
+const fs = require('fs');
 
 // Model-class slots Claude Code sends (mapped in config/claude/settings.json).
-// VISION_SIDE = aliases the litellm config serves from the vision backend —
-// must match the model_list split in config/litellm-config.yaml. Requests to
-// these may carry images even when the primary is text-only.
+// VISION_SIDE = aliases the reasoning-normalizer resolves to roles.vision (must match its
+// VISION_ALIASES). Requests to these may carry images even when the brain is text-only.
 const CLASS_SLOTS  = new Set(['haiku', 'sonnet', 'opus', 'fable']);
 const VISION_SIDE  = new Set([VISION_MODEL_ALIAS, 'haiku', 'sonnet']);
-const BRAIN_ID     = process.env.MODEL_ID || 'brain';
-const VISION_ID    = process.env.VISION_MODEL_ID || process.env.MODEL_ID || 'vision';
-const backendFor   = (model) => VISION_SIDE.has(model)
-  ? { id: VISION_ID, side: 'vision' }
-  : { id: BRAIN_ID,  side: 'brain'  };
+
+// cfg() -> { primaryHasVision, brainId, visionId }: from the catalog when present (cached by
+// mtime), else from env (legacy single-model contract).
+let cfgCache = null, cfgMtime = -1;
+function cfg() {
+  let st = null;
+  try { st = fs.statSync(MODELS_FILE); } catch { /* no catalog */ }
+  if (!st) {
+    if (cfgMtime !== 0) {
+      cfgMtime = 0;
+      cfgCache = {
+        primaryHasVision: String(process.env.MODEL_VISION || 'true').toLowerCase() !== 'false',
+        visionHasVision: true,   // legacy contract: the vision entry is assumed capable
+        brainId: process.env.MODEL_ID || 'brain',
+        visionId: process.env.VISION_MODEL_ID || process.env.MODEL_ID || 'vision',
+      };
+    }
+    return cfgCache;
+  }
+  if (st.mtimeMs === cfgMtime && cfgCache) return cfgCache;
+  try {
+    const raw = JSON.parse(fs.readFileSync(MODELS_FILE, 'utf8'));
+    const ref = (r) => { const s = String(r || ''); const i = s.indexOf('/'); return i > 0 ? [s.slice(0, i), s.slice(i + 1)] : ['', s]; };
+    const [bs, bid] = ref(raw.roles?.brain), [, vid] = ref(raw.roles?.vision);
+    const brainDef = raw.servers?.[bs]?.models?.[bid] || {};
+    const [vs] = ref(raw.roles?.vision);
+    const visionDef = raw.servers?.[vs]?.models?.[vid] || {};
+    cfgCache = { primaryHasVision: brainDef.vision === true, visionHasVision: visionDef.vision === true,
+                 brainId: bid || 'brain', visionId: vid || bid || 'vision' };   // no vision role -> brain answers
+    cfgMtime = st.mtimeMs;
+    console.log(`> catalog: brain=${cfgCache.brainId} (vision=${cfgCache.primaryHasVision}) vision=${cfgCache.visionId}`);
+  } catch (e) {
+    console.error(`> catalog unreadable (${e.message}) — keeping previous routing`);
+  }
+  return cfgCache;
+}
+const backendFor = (model, c) => VISION_SIDE.has(model)
+  ? { id: c.visionId, side: 'vision' }
+  : { id: c.brainId,  side: 'brain'  };
 
 // --- the rewrite ---------------------------------------------------------
 // Walk messages; for every user message, pull image blocks out of tool_result blocks and append
@@ -107,9 +144,11 @@ function containsImages(body) {
 // accept. Returns the number of blocks replaced.
 const STRIPPED_IMAGE_NOTE =
   '[image removed — the current model is text-only; the image was analyzed earlier in this conversation]';
-function stripImages(body) {
+const NO_VISION_NOTE =
+  '[image removed — no vision-capable model is configured in the model catalog, so this image could not be delivered; tell the user]';
+function stripImages(body, text = STRIPPED_IMAGE_NOTE) {
   let stripped = 0;
-  const placeholder = () => { stripped++; return { type: 'text', text: STRIPPED_IMAGE_NOTE }; };
+  const placeholder = () => { stripped++; return { type: 'text', text }; };
   for (const msg of body.messages) {
     if (!msg || !Array.isArray(msg.content)) continue;
     msg.content = msg.content.map((block) => {
@@ -132,10 +171,17 @@ function maybeRewrite(pathname, raw) {
   let changed = hoistToolResultImages(body);
   const requested = body.model; // reroute below may rename it — log the original class
   let note = '';
-  if (!PRIMARY_HAS_VISION
+  const c = cfg();
+  if (!c.primaryHasVision
       && typeof body.model === 'string' && !VISION_SIDE.has(body.model)) {
     const msgs = Array.isArray(body.messages) ? body.messages : [];
-    if (messageHasImage(msgs[msgs.length - 1])) {
+    if (!c.visionHasVision && containsImages(body)) {
+      // Nobody can see: the vision role is text-only too (a text-only-only catalog is allowed).
+      // Rerouting would just hit a 400 at vLLM; strip instead so the model can SAY so.
+      const stripped = stripImages(body, NO_VISION_NOTE);
+      changed = true;
+      note = ` — ${stripped} image block(s) dropped: no vision-capable model in the catalog`;
+    } else if (messageHasImage(msgs[msgs.length - 1])) {
       // Fresh image in the newest turn — this request is about the image.
       // (Hoisting places a tool_result image into an appended user message,
       // so a just-read image is the last message either way.)
@@ -156,7 +202,7 @@ function maybeRewrite(pathname, raw) {
   // Colors match includes/colors.sh: INFO \e[38;5;68m, WARNING \e[93m.
   if (pathname === '/v1/messages' && typeof requested === 'string') {
     const cls = CLASS_SLOTS.has(requested) ? `${requested}-class` : `'${requested}'`;
-    const { id, side } = backendFor(body.model);
+    const { id, side } = backendFor(body.model, c);
     const warn = note ? `\x1b[93m${note}\x1b[0m` : '';
     console.log(`\x1b[38;5;68m> Req: ${cls} called — routing to ${id} (${side})\x1b[0m${warn}`);
   }
@@ -213,6 +259,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(SHIM_PORT, '127.0.0.1', () => {
-  const routing = PRIMARY_HAS_VISION ? '' : `, routing image requests to '${VISION_MODEL_ALIAS}'`;
-  console.log(`> claude-shim listening on 127.0.0.1:${SHIM_PORT} → ${UPSTREAM.origin} (hoisting tool_result images${routing})`);
+  const c = cfg();
+  const routing = c.primaryHasVision ? '' : `, routing image requests to '${VISION_MODEL_ALIAS}'`;
+  console.log(`> claude-shim listening on 127.0.0.1:${SHIM_PORT} → ${UPSTREAM.origin} (hoisting tool_result images${routing}; catalog ${MODELS_FILE})`);
 });

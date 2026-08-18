@@ -1,6 +1,37 @@
 # Idea: model catalog + configurator (pick brain / vision like we pick the tool)
 
-Status: idea, 2026-08-18. Do on a fresh branch after `feat/bifrost-replacement-test` is merged.
+Status: IMPLEMENTED on `feat/model-catalog` (2026-08-18) — see "As built" right below. Plan v2 and the
+older phase-1 sketch further down are kept as the design record.
+
+## As built (2026-08-18)
+
+- `config/models/models.yml` (gitignored) + `models.example.yml`; mounted rw into the sandbox at
+  `~/.config/models`, ro into the reasoning-normalizer at `/config/models`.
+- `scripts/model-config.sh` → `/usr/local/bin/model-config` (bash + yq in the image; no host deps).
+  Menu: add server (probes `GET /v1/models`, multi-select, per-model name/vision — no fuses_reasoning
+  question: every model goes through the normalizer, whose split is a no-op when not needed),
+  edit/delete server, assign roles, RESET (backup + empty or example), show effective, write & exit
+  (validates; edits on a scratch copy). `model-config status` → exit 0/1 for the session menu.
+- `scripts/agent-session.sh`: 4th menu entry "model configuration"; unconfigured → red warning,
+  tools disabled, wizard default, DEFAULT_TOOL ignored; returns to the menu after the wizard.
+- `scripts/render-models.sh` → `/usr/local/bin/render-models`: catalog → `models.json`,
+  `~/.config/opencode/opencode.json` (one provider per server), `~/.omp/agent/models.yml`,
+  `~/.omp/agent/config.yml`. Runs in the entrypoint (replaces envsubst; `gettext-base` dropped)
+  and after every wizard write. Templates stay as skeletons (`provider: {}`, `providers: {}`).
+- **Zero-restart gateway**: `config/litellm-config.yaml` is a static wildcard
+  (`model_name: "*"` → `hosted_vllm/*` → normalizer); the reasoning-normalizer is now also the
+  router (`MODELS_FILE`, re-read on mtime): brain/opus/fable/claude-* → roles.brain,
+  vision/sonnet/haiku → roles.vision, `<server>/<id>` explicit, bare id when unique; unknown → 404
+  "run the model configuration". Legacy `VLLM_UPSTREAM` mode when no catalog exists.
+- `claude-shim.js` and `analyze-image.js` read `models.json` per call (env fallback kept).
+- `x-model-env` / `MODEL_*` in compose and `.env.example` removed; `includes/model.sh` only
+  warns + exports VISION_* for analyze-image.
+- Verified live: alias routing (brain/vision/raw id/server-id/unknown), add server → routed on the
+  next request, brain swap → gateway + opencode/omp follow, reset → restored; entrypoint renders;
+  session menu configured/unconfigured; unit tests normalizer 7/7, shim all pass.
+- Not done (still true caveat, smaller now): headroom's target is fixed to the normalizer (fine —
+  every model goes through it); per-session choice = the tools' own pickers.
+
 
 ## Problem
 
@@ -43,6 +74,120 @@ So a picker that runs *inside a browser session* can only change per-session thi
 (Claude Code's `ANTHROPIC_DEFAULT_*_MODEL`, which litellm alias to hit) — it cannot repoint
 litellm/normalizer/headroom. That splits the idea into two phases; phase 1 is the one worth
 doing now.
+
+
+## Plan v2 — the wizard (2026-08-18, from the user's requirements) — REVIEW BEFORE BUILD
+
+Requirements (verbatim intent): reset the entire config · add a server · look up its models ·
+select model(s) and save · assign brain / vision · several servers, cherry-picking one model out
+of five on one box, one on another · a third server with a "haiku-like" model that has NO role but
+is known to the config, so it can be switched to for the next session / screen / shell.
+
+### Data model — `config/models.yml` (single source of truth, mounted `:ro` into the containers)
+
+```yaml
+servers:                         # only what the wizard saved; NOT everything the server serves
+  spark-brain:
+    url: http://10.0.0.25:8888/v1
+    models:
+      deepseek-v4-flash-0731:
+        name: "DeepSeek V4 Flash 0731"   # display name in tool pickers
+        context: 1000000                 # max_model_len from GET /v1/models
+        max_tokens: 16384
+        vision: false
+        fuses_reasoning: true            # route through the reasoning-normalizer
+  spark-vision:
+    url: http://10.0.0.13:8000/v1
+    models:
+      qwen3.6-35b: {name: "Qwen3.6 35B A3B", context: 131072, max_tokens: 16384, vision: true}
+  box3:
+    url: http://10.0.0.40:8000/v1
+    models:
+      qwen3.6-9b: {name: "Qwen3.6 9B (haiku-ish)", context: 65536, max_tokens: 8192, vision: false}
+roles:                           # exactly one each; vision may equal brain
+  brain:  spark-brain/deepseek-v4-flash-0731
+  vision: spark-vision/qwen3.6-35b
+```
+
+Model key = the exact served id. Alias exposed to the tools = the id; if two servers serve the
+same id, the alias becomes `server/id` (wizard warns).
+
+### Wizard — `scripts/model-config.sh` (host wrapper) → runs the wizard INSIDE docker
+
+No host dependencies beyond docker (repo rule). The wrapper does
+`docker compose run --rm --no-deps -v ./config:/config:rw model-config`, a tiny profile-gated
+service on the sandbox image (python 3.13 already there; add `pyyaml`). The wizard itself is
+python stdlib + yaml, numbered menus like `agent-session.sh`, colors via the same palette:
+
+```
+Model configuration  (config/models.yml)
+
+Servers
+  1) spark-brain   http://10.0.0.25:8888/v1   1 model   [brain]
+  2) spark-vision  http://10.0.0.13:8000/v1   1 model   [vision]
+  3) box3          http://10.0.0.40:8000/v1   1 model
+
+Roles
+  brain  = spark-brain/deepseek-v4-flash-0731
+  vision = spark-vision/qwen3.6-35b
+
+  a) add server        e) edit server (rescan / add-remove models / rename)   d) delete server
+  r) assign roles      s) show effective config (what the tools will see)
+  R) RESET config      w) write & exit                                        q) quit w/o saving
+```
+
+Flows:
+- **add server**: name → URL → `GET url/models` (10s timeout; on failure: keep URL, retry, or add
+  models by hand) → list `id  max_model_len` → multi-select (`1,3` or `all`) → per model: display
+  name [default id], vision? [y/N — /v1/models doesn't tell us], fuses_reasoning? [default y if id
+  contains "deepseek", else n], max_tokens [16384] → back to main.
+- **assign roles**: numbered list of ALL known models across servers; pick brain, then vision
+  (default = a vision-capable one if exactly one exists; may equal brain).
+- **reset**: confirm → `models.yml` → `models.yml.bak-<ts>` → empty skeleton (`servers: {}`,
+  `roles: {}`); wizard refuses to write with a missing role, so reset is always followed by add.
+- **write**: validates (roles exist, every model has context/max_tokens, aliases unique), writes
+  `config/models.yml` AND `.env.models` (see below), prints "next: `docker compose up -d`".
+
+### How the catalog reaches the stack (this is where the "known but unassigned" requirement lands)
+
+| consumer | what it needs | how it gets it |
+|---|---|---|
+| compose interpolation (`x-model-env` → normalizer `VLLM_UPSTREAM`, headroom target, litellm `os.environ/`) | brain + vision URL/ID/… at `compose up` | **`.env.models`** (generated, gitignored) loaded via `env_file:`; contains exactly today's `MODEL_*`/`VISION_MODEL_*` contract |
+| litellm `model_list` | ALL known models as aliases + role aliases (`brain`, `vision`, `opus`, `sonnet`, `haiku`, compat ids) | `scripts/render-models.py` (in litellm's `sh -c` wrapper — the image has python+pyyaml) renders the full config from `/config/models.yml`; brain via normalizer, every other model direct to its server |
+| opencode `opencode.json`, omp `models.yml`/`config.yml` | one provider per server, all its models; default = brain | same renderer in the sandbox entrypoint (replaces the `envsubst` templates for these two files) |
+| Claude Code | `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` | opus→brain, sonnet→vision, haiku→ the model marked `haiku`?? — no: keep haiku→vision as today; `/model <alias>` reaches ANY known model because litellm serves them all |
+| claude-shim | `MODEL_VISION`, `MODEL_ID`, `VISION_MODEL_ID` | unchanged (from `.env.models`); the text-only-brain image reroute keeps working |
+| `includes/model.sh` guards | `MODEL_*` set | unchanged — the safety net if `.env.models` is missing |
+
+**Per-session switching** = the tools' own pickers (Claude Code `/model`, opencode model list, omp
+`models.yml`) now list the whole catalog. No new session menu needed for v1; the role assignment
+is only the *default*. Two sessions can use different models at the same time (litellm serves all).
+
+Caveat kept honest: only the **brain** goes through reasoning-normalizer + headroom (their upstream
+is fixed at container start). A non-brain model with `fuses_reasoning: true` (e.g. a second
+deepseek on box3) would hit the both-field-chunk bug when selected ad hoc — the wizard warns at
+save time. Fixing that = teach `reasoning-normalizer.js` a `/u/<host:port>/v1/...` path prefix so
+litellm can send any fusing model through it (small, our own code) — listed as step 7, do it if
+the warning ever fires for real.
+
+### Steps (each testable on its own)
+
+1. `config/models.yml` (seeded with today's two Sparks) + `.gitignore` `.env.models`
+2. `scripts/render-models.py` — `--env` (prints the `MODEL_*` contract), `--litellm`, `--opencode`,
+   `--omp-models`, `--omp-config`; unit test with a 3-server fixture (`tests/test-render-models.sh`)
+3. wire it: compose `env_file`, litellm wrapper, sandbox entrypoint (`render_tool_templates`),
+   Dockerfile `pyyaml`; drop hardcoded fallbacks from `x-model-env` (render fails loudly instead)
+4. `scripts/model-config.py` (wizard) + `scripts/model-config.sh` (wrapper) + compose service
+   `model-config` (profile `config`)
+5. `.env.example` model block → pointer to the wizard; README section; `ideas/dynamic-models.md`
+   "superseded" note
+6. live test: 3 servers configured (2 real + 1 fake) → `compose up` → litellm `/v1/models` lists
+   all aliases, `brain`/`vision` resolve, opencode+omp pickers show all, Claude `/model qwen3.6-9b`
+   works, existing thinking/vision gates green
+7. (only if needed) normalizer path-prefix routing for non-brain fusing models
+
+Out of scope v1: web UI, auto-detecting `vision`/`fuses_reasoning` from the server, a session-start
+"pick brain" menu (the tools' pickers cover it), per-session headroom.
 
 ## Phase 1 — catalog + compose-time selection (the deliverable)
 
