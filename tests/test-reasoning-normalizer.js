@@ -5,6 +5,7 @@
 // delta.reasoning and delta.content into one chunk (the bug). The normalizer must split that into
 // two, so no chunk carries both fields, while preserving every reasoning and content token and the
 // finish_reason. Also covers the no-op paths: a qwen-style stream (no dual chunk) and a plain JSON
+// response, and the catalog ROUTER mode (MODELS_FILE): alias resolution, path join, 404s, live reload.
 // response must pass through untouched.
 //
 // Usage: node tests/test-reasoning-normalizer.js   (no deps, exits non-zero on failure)
@@ -19,9 +20,16 @@ const NORM_PORT = 4018;
 
 // --- stub vLLM: replays a canned body with the content-type the test asks for --------------
 let responder = null; // (res) => void
+let lastReq = null;   // { path, body } of the most recent upstream request (router assertions)
 const upstream = http.createServer((req, res) => {
-  req.resume();
-  req.on('end', () => responder(res));
+  const chunks = [];
+  req.on('data', (c) => chunks.push(c));
+  req.on('end', () => {
+    let body = null;
+    try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { /* not JSON */ }
+    lastReq = { path: req.url, body };
+    responder(res);
+  });
 });
 
 function sseChunk(obj) {
@@ -50,27 +58,27 @@ function qwenStream(res) {
   res.end();
 }
 
-function post() {
+function post(bodyStr = '{"stream":true}', reqPath = '/v1/chat/completions') {
   return new Promise((resolve, reject) => {
     const req = http.request(
-      { hostname: '127.0.0.1', port: NORM_PORT, path: '/v1/chat/completions', method: 'POST',
+      { hostname: '127.0.0.1', port: NORM_PORT, path: reqPath, method: 'POST',
         headers: { 'content-type': 'application/json' } },
       (res) => {
         let body = '';
         res.setEncoding('utf8');
         res.on('data', (d) => { body += d; });
-        res.on('end', () => resolve({ headers: res.headers, body }));
+        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
       }
     );
     req.on('error', reject);
-    req.end('{"stream":true}');
+    req.end(bodyStr);
   });
 }
 
-function startNormalizer() {
+function startNormalizer(extraEnv = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [NORM], {
-      env: { ...process.env, NORMALIZER_PORT: String(NORM_PORT), VLLM_UPSTREAM: `http://127.0.0.1:${UPSTREAM_PORT}` },
+      env: { ...process.env, NORMALIZER_PORT: String(NORM_PORT), VLLM_UPSTREAM: `http://127.0.0.1:${UPSTREAM_PORT}`, ...extraEnv },
       stdio: ['ignore', 'pipe', 'inherit'],
     });
     child.stdout.once('data', () => resolve(child)); // listening banner
@@ -145,10 +153,68 @@ async function main() {
     responder = (res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); };
     const j = await post();
     check('non-SSE response passed through verbatim', j.body === '{"ok":true}');
+    check('legacy mode: model untouched, path forwarded as-is',
+      lastReq && lastReq.path === '/v1/chat/completions' && lastReq.body?.stream === true && !('model' in (lastReq.body || {})));
 
   } finally {
     child.kill();
+  }
+
+  // --- Case 4: catalog router mode (MODELS_FILE) — aliases resolve, model rewritten, path joined ----
+  const fs = require('fs'), os = require('os');
+  const catalogFile = path.join(os.tmpdir(), `models-test-${process.pid}.json`);
+  const writeCatalog = (obj) => fs.writeFileSync(catalogFile, JSON.stringify(obj));
+  const base = `http://127.0.0.1:${UPSTREAM_PORT}/v1`;
+  writeCatalog({
+    servers: {
+      a: { url: base, models: { 'deep-1': { vision: false }, 'shared': {} } },
+      b: { url: `${base}/b`, models: { 'qwen-1': { vision: true }, 'shared': {} } },   // /v1/b: distinguishable path
+      broken: { url: 'not a url', models: { 'ghost': {} } },                             // must be skipped, not crash
+    },
+    roles: { brain: 'a/deep-1', vision: 'b/qwen-1' },
+  });
+  const rchild = await startNormalizer({ MODELS_FILE: catalogFile });
+  responder = (res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); };
+  try {
+    const cases = [
+      ['brain',            'deep-1', '/v1/chat/completions'],
+      ['opus',             'deep-1', '/v1/chat/completions'],
+      ['claude-sonnet-4-5','deep-1', '/v1/chat/completions'],
+      ['claude-3-5-haiku-20241022','deep-1', '/v1/chat/completions'],   // any claude-* id -> brain
+      ['vision',           'qwen-1', '/v1/b/chat/completions'],
+      ['haiku',            'qwen-1', '/v1/b/chat/completions'],
+      ['qwen-1',           'qwen-1', '/v1/b/chat/completions'],   // bare id, unique
+      ['b/shared',         'shared', '/v1/b/chat/completions'],   // explicit server/id
+    ];
+    let ok = 0;
+    for (const [alias, id, p] of cases) {
+      const r = await post(JSON.stringify({ model: alias, stream: false }));
+      const good = r.status === 200 && lastReq?.body?.model === id && lastReq?.path === p;
+      if (!good) console.log(`     ${alias}: status=${r.status} model=${lastReq?.body?.model} path=${lastReq?.path}`);
+      ok += good ? 1 : 0;
+    }
+    check(`router: ${cases.length}/${cases.length} aliases resolve to the right model + server path`, ok === cases.length);
+
+    let r = await post(JSON.stringify({ model: 'ghost' }));
+    check('router: server with invalid url is skipped (404, no crash)', r.status === 404);
+    r = await post(JSON.stringify({ model: 'shared' }));
+    check('router: ambiguous bare id (on two servers) is rejected with 404', r.status === 404 && /not in the catalog/.test(r.body));
+    r = await post(JSON.stringify({ model: 'nope' }));
+    check('router: unknown model -> 404 with the wizard hint', r.status === 404 && /model configuration/.test(r.body));
+    r = await post('not json at all');
+    check('router: non-JSON body forwarded to legacy upstream unchanged', r.status === 200 && lastReq?.body === null);
+
+    // catalog change is picked up without restart (mtime): swap brain to server b
+    await new Promise((res) => setTimeout(res, 20));   // ensure a distinct mtime
+    writeCatalog({ servers: { a: { url: base, models: { 'deep-1': {} } }, b: { url: `${base}/b`, models: { 'qwen-1': {} } } },
+                   roles: { brain: 'b/qwen-1', vision: 'b/qwen-1' } });
+    r = await post(JSON.stringify({ model: 'brain' }));
+    check('router: catalog change applied on the next request (no restart)',
+      r.status === 200 && lastReq?.body?.model === 'qwen-1' && lastReq?.path === '/v1/b/chat/completions');
+  } finally {
+    rchild.kill();
     upstream.close();
+    try { fs.unlinkSync(catalogFile); } catch { /* ignore */ }
   }
 
   console.log(failures === 0 ? '\nAll reasoning-normalizer checks passed.' : `\n${failures} check(s) FAILED.`);

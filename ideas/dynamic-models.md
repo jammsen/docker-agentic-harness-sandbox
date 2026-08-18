@@ -1,3 +1,6 @@
+> **Superseded (2026-08-18)** by the model catalog + wizard — `ideas/model-catalog-configurator.md`.
+> The `MODEL_*` env contract described below no longer exists; models live in `config/models/models.yml`.
+
 # Feature: Dynamic model configuration from compose.yml (feat/dynamic-models)
 
 ## Problem

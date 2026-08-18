@@ -47,7 +47,6 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     ca-certificates \
     curl \
     dnsutils \
-    gettext-base \
     git \
     git-lfs \
     gosu \
@@ -90,6 +89,19 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # mcp-searxng — pre-installed so OMP (which eagerly starts MCP servers at launch)
 #               doesn't time out waiting for npx to download it on first use
 RUN npm install -g wetty@3.1.0 mcp-searxng@1.8.0
+
+# yq (mikefarah, static Go binary) — the model-config wizard reads/writes config/models/models.yml
+# with it, and the entrypoint renders the tool configs from that file. Pinned + checksummed.
+ARG YQ_VERSION=v4.53.3
+RUN arch="$(dpkg --print-architecture)" \
+    && case "$arch" in \
+         amd64) sha=fa52a4e758c63d38299163fbdd1edfb4c4963247918bf9c1c5d31d84789eded4 ;; \
+         arm64) sha=578648e463a11c1b6db6010cbf41eafed6bee79466fcffa1bb446672cf7945ea ;; \
+         *) echo "unsupported arch $arch" && exit 1 ;; \
+       esac \
+    && curl -fsSL -o /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${arch}" \
+    && echo "$sha  /usr/local/bin/yq" | sha256sum -c - \
+    && chmod 755 /usr/local/bin/yq && yq --version
 
 # Patch wetty's env.js which assumes "env (GNU coreutils)" version string.
 # Ubuntu 26.04 ships uutils coreutils whose version output is "env (uutils coreutils) 0.8.0",
@@ -220,6 +232,8 @@ RUN SHIM_PATH=/claude-shim.js node /tests/test-claude-shim.js
 COPY --chmod=644 scripts/reasoning-normalizer.js /reasoning-normalizer.js
 RUN NORMALIZER_PATH=/reasoning-normalizer.js node /tests/test-reasoning-normalizer.js
 COPY --chmod=755 scripts/agent-task.sh /usr/local/bin/agent-task
+COPY --chmod=755 scripts/model-config.sh /usr/local/bin/model-config
+COPY --chmod=755 scripts/render-models.sh /usr/local/bin/render-models
 COPY --chmod=755 scripts/analyze-image.js /usr/local/bin/analyze-image
 
 ENTRYPOINT ["./entrypoint.sh"]

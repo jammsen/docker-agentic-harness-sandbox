@@ -1,5 +1,5 @@
-# Tool configuration — syncs Claude Code config, renders model templates,
-# links opencode auth. All sources are mounted by compose.yml.
+# Tool configuration — syncs Claude Code config, renders tool configs from the
+# model catalog, links opencode auth. All sources are mounted by compose.yml.
 
 sync_claude_config() {
     # Runs on every start so config changes always take effect. Sources are
@@ -29,27 +29,13 @@ sync_claude_config() {
     e "> Claude Code config synced to $claude_dir and $claude_json"
 }
 
-# envsubst gets an explicit variable list so nothing else that looks like $VAR
-# in the configs (e.g. "$schema") is touched.
-_MODEL_VARS='${MODEL_URL} ${MODEL_ID} ${MODEL_NAME} ${MODEL_CONTEXT} ${MODEL_MAX_TOKENS} ${VISION_MODEL_URL} ${VISION_MODEL_ID} ${VISION_MODEL_NAME} ${VISION_MODEL_CONTEXT} ${VISION_MODEL_MAX_TOKENS}'
-
-_render_template() { # <src> <dst>
-    local src="$1" dst="$2"
-    [[ -f "$src" ]] || return 0
-    mkdir -p "$(dirname "$dst")"
-    envsubst "$_MODEL_VARS" < "$src" > "$dst"
-    # chmod before chown: after the chown root no longer owns the file, and
-    # chmod on a non-owned file needs CAP_FOWNER, which compose drops.
-    chmod 644 "$dst"
-    chown "$APP_USER":"$APP_GROUP" "$dst"
-    e "> Rendered $(basename "$src") -> $dst"
-}
-
+# Tool configs are rendered from the model catalog (~/.config/models/models.yml) by render-models —
+# the same script the model-config wizard runs after "write", so a wizard change and a container
+# start produce identical files. No catalog yet -> nothing rendered; the session menu gates the
+# tools until the wizard has run.
 render_tool_templates() {
-    local template_dir="$APP_HOME/.config/templates"
-    _render_template "$template_dir/opencode.json"   "$APP_HOME/.config/opencode/opencode.json"
-    _render_template "$template_dir/omp-config.yml"  "$APP_HOME/.omp/agent/config.yml"
-    _render_template "$template_dir/omp-models.yml"  "$APP_HOME/.omp/agent/models.yml"
+    export APP_HOME APP_USER APP_GROUP        # readonly in the entrypoint, so pass by export not prefix
+    /usr/local/bin/render-models || ew "> [Warning] render-models failed — tool configs may be stale"
     chown "$APP_USER":"$APP_GROUP" "$APP_HOME/.config/opencode" "$APP_HOME/.omp" "$APP_HOME/.omp/agent" 2>/dev/null || true
 }
 

@@ -19,12 +19,24 @@ if (!imagePath) {
 }
 const userPrompt = process.argv[3] || 'Describe this image in detail. What do you see?';
 
-// Explicit vision call — always target the vision model (which defaults to the
-// primary in single-model setups).
-const API_URL = process.env.VISION_MODEL_URL || process.env.MODEL_URL;
-const MODEL   = process.env.VISION_MODEL_ID  || process.env.MODEL_ID;
+// Explicit vision call — always target the catalog's vision role (config/models/models.yml, read
+// via its rendered models.json so a wizard change applies to the next call). Env VISION_MODEL_URL/
+// _ID (or MODEL_URL/_ID) remain the fallback when there is no catalog.
+function visionFromCatalog() {
+  const file = process.env.MODELS_FILE || `${process.env.HOME || '/home/agent'}/.config/models/models.json`;
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const ref = String(raw.roles?.vision || raw.roles?.brain || ''); const i = ref.indexOf('/');   // no vision role -> the brain, if it can see
+    if (i <= 0) return null;
+    const srv = raw.servers?.[ref.slice(0, i)], id = ref.slice(i + 1);
+    return srv?.url && srv.models?.[id]?.vision === true ? { url: srv.url, id } : null;
+  } catch { return null; }
+}
+const fromCatalog = visionFromCatalog();
+const API_URL = fromCatalog?.url || process.env.VISION_MODEL_URL || process.env.MODEL_URL;
+const MODEL   = fromCatalog?.id  || process.env.VISION_MODEL_ID  || process.env.MODEL_ID;
 if (!API_URL || !MODEL) {
-  process.stderr.write('Error: no vision model configured. Set MODEL_URL/MODEL_ID (or VISION_MODEL_*) in compose.yml / .env\n');
+  process.stderr.write('Error: no vision model configured — run "model configuration" from the session menu\n');
   process.exit(1);
 }
 const REQUEST_TIMEOUT_MS = parseInt(process.env.MODEL_REQUEST_TIMEOUT_MS || '300000', 10); // 5 min

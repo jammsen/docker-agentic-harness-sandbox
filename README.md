@@ -43,45 +43,40 @@ A companion **image upload page** runs on `https://<host>:1112`. Paste a screens
 - Access to a running inference server exposing an OpenAI-compatible API (vLLM, llama.cpp, SGLang, DGX Spark stacks, ...)
 - The server must have the model loaded and `/v1/models` responding
 
-> **How this works:** The agent tools running inside the container are clients to your external inference server. They have no direct access to the model weights — all inference goes through the API endpoint. If a tool ever needs to identify which model it is using, it must look it up via the API or a web search based on the model ID configured via `MODEL_ID` in `.env` / `compose.yml`.
+> **How this works:** The agent tools running inside the container are clients to your external inference server. They have no direct access to the model weights — all inference goes through the API endpoint. If a tool ever needs to identify which model it is using, it must look it up via the API or a web search based on the model id from the catalog (`config/models/models.yml`).
 
 ### Configuring your models
 
-All model settings live in one place: the `x-model-env` block at the top of `compose.yml`. Set the variables in a `.env` file next to `compose.yml` (copy `.env.example`) — docker compose picks it up automatically, no shell exports needed. Every tool config (opencode, OMP, LiteLLM) is a template that gets rendered from these variables at container start; there is nothing to hand-edit in `config/` anymore.
+Models are configured **inside the browser terminal**, not in `.env`: open the session, pick
+**model configuration** on the first screen, and the wizard walks you through it. Until a brain is
+assigned the menu shows the wizard in red and blocks sessions, so nobody runs into gateway errors
+first. A vision model is optional (without one, images are dropped with a note).
+
+The wizard manages one file — `config/models/models.yml` (the catalog; start from
+`config/models/models.example.yml`, hand-editing is fine too):
+
+- **add server** — name + OpenAI-compatible base URL (`http://host:port/v1`); the wizard calls
+  `GET /v1/models`, lists what the server serves with its context length, and you pick which
+  models to *keep* (`1,3` or `all`). Per model: display name and "can it see images?" (the server
+  can't tell us). Any number of servers; keep one model out of five on one box, another on the
+  next. (DeepSeek-style fused reasoning deltas need no setting: every model goes through the
+  reasoning-normalizer, which is a no-op for models that don't need it.)
+- **assign roles** — exactly one **brain** (the primary) and optionally one **vision** (handles
+  image requests; may be the brain itself if it can see; must be marked vision-capable). Every
+  other model in the catalog stays known and selectable in the tools (`/model <id>` in Claude
+  Code, the opencode and OMP pickers).
+- **edit / delete server**, **RESET catalog** (backup kept next to the file), **write & exit**.
+
+Nothing needs a restart. On write, the wizard regenerates the tool configs (opencode, OMP —
+one provider per server), and the gateway (`litellm → reasoning-normalizer`) resolves every alias
+(`brain`, `vision`, `opus`, `sonnet`, `haiku`, or a raw model id) against the catalog on each
+request — the normalizer re-reads the file when it changes.
+
+Verify a server is reachable before adding it:
 
 ```bash
-cp .env.example .env
-# then edit .env:
-MODEL_URL=http://<your-server-ip>:8000/v1   # OpenAI-compatible API base, incl. /v1
-MODEL_ID=<model-id>                         # exact "id" from GET $MODEL_URL/models
-MODEL_NAME=<display name>                   # shown in the tool pickers
-MODEL_CONTEXT=120000                        # from max_model_len in /v1/models
-MODEL_MAX_TOKENS=16384
+curl http://<host>:<port>/v1/models
 ```
-
-**Dual-model setups — text-only brains with a vision fallback.** This is the default: DeepSeek V4 Flash as the primary (`MODEL_VISION=false`) with Qwen3.6 35B handling image requests via the `VISION_MODEL_*` variables:
-
-```bash
-MODEL_VISION=false
-VISION_MODEL_URL=http://<vision-host>:8000/v1
-VISION_MODEL_ID=qwen3.6-35b
-```
-
-What that does:
-
-- **Claude Code**: `claude-shim` automatically reroutes any request that carries an image to the vision model — the primary answers everything else. You can also switch a whole session manually with `/model vision`.
-- **opencode / OMP**: both models appear in the model picker (`vllm/...` and `vision/...`); switch manually when working with images.
-- **`analyze-image`**: always uses the vision model.
-
-For single-model setups (a vision-capable primary), set `MODEL_VISION=true` and point `VISION_MODEL_*` at the same endpoint — see the example in `.env.example`.
-
-Verify your server is reachable before starting:
-
-```bash
-curl $MODEL_URL/models
-```
-
-Use the exact `"id"` value from the response for `MODEL_ID`, and the `max_model_len` field for `MODEL_CONTEXT`.
 
 ---
 
@@ -97,9 +92,9 @@ docker-agentic-harness-sandbox/
 ├── includes/               ← entrypoint function library, one file per concern (sourced from /includes/ at start)
 │   ├── colors.sh           ← colorful echo helpers (e/ei/ew/ee/es) shared by all shell scripts
 │   ├── security.sh         ← root requirement + PUID/PGID validation
-│   ├── model.sh            ← MODEL_*/VISION_MODEL_* validation and vision-from-primary derivation
+│   ├── model.sh            ← reads the model catalog roles (for analyze-image); warns if not configured
 │   ├── user.sh             ← agent user/group creation, UID/GID realignment, ownership fixes
-│   ├── config.sh           ← Claude config sync, model-template rendering (envsubst), opencode auth link
+│   ├── config.sh           ← Claude config sync, tool-config rendering from the catalog (render-models), opencode auth link
 │   ├── tools.sh            ← workspace check + agent-tool discovery/validation (TOOLS, DEFAULT_TOOL)
 │   └── services.sh         ← process supervisor + upload server, claude-shim and WeTTY startup
 ├── scripts/                ← runtime + maintenance scripts (baked into the image)
@@ -123,7 +118,7 @@ docker-agentic-harness-sandbox/
 │   └── test-searxng.sh             ← live search check — run manually: docker exec agentic-harness-sandbox bash /tests/test-searxng.sh
 ├── config/
 │   ├── opencode/
-│   │   ├── opencode.json   ← opencode provider/agent config TEMPLATE (rendered from MODEL_* env at start)
+│   │   ├── opencode.json   ← opencode agent config TEMPLATE (providers/model filled from the catalog by render-models)
 │   │   ├── AGENTS.md       ← global sandbox rules for opencode (mounted read-only)
 │   │   ├── auth.json       ← opencode provider auth tokens (mounted read-only) — edit before use
 │   │   ├── agents/         ← opencode subagent definitions
@@ -131,8 +126,8 @@ docker-agentic-harness-sandbox/
 │   │   └── skills/         ← reusable skill definitions for opencode
 │   ├── omp/
 │   │   ├── AGENTS.md       ← sandbox rules for omp (mounted read-only)
-│   │   ├── config.yml      ← OMP model role TEMPLATE (rendered from MODEL_* env at start)
-│   │   ├── models.yml      ← OMP provider/model TEMPLATE (rendered from MODEL_* env at start)
+│   │   ├── config.yml      ← OMP model role TEMPLATE (roles/context filled from the catalog)
+│   │   ├── models.yml      ← OMP provider/model TEMPLATE (providers filled from the catalog)
 │   │   └── settings.json   ← OMP settings
 │   ├── claude/
 │   │   ├── settings.json   ← Claude Code settings (env, model, ANTHROPIC_BASE_URL → shim)
@@ -140,7 +135,8 @@ docker-agentic-harness-sandbox/
 │   │   ├── claude.json     ← first-run state: dark mode, workspace trust, API key accepted
 │   │   └── agents/         ← Claude Code subagents synced into ~/.claude/agents
 │   ├── tmux.conf           ← window-size latest (dynamic per-client resize) + OSC 52 clipboard forwarding
-│   └── litellm-config.yaml ← LiteLLM TEMPLATE: maps Anthropic aliases + vision entry onto your models
+│   ├── litellm-config.yaml ← LiteLLM config (static wildcard: every model name goes to the reasoning-normalizer, which routes by catalog)
+│   └── models/             ← the model catalog: models.yml (yours, gitignored) + models.example.yml; managed by the wizard
 ├── data/                   ← tool session state, persisted across runs (opencode/, claude/)
 ├── ideas/                  ← design notes and drafts
 └── workspace/              ← put your code projects here (uploads/ holds uploaded images)
@@ -154,8 +150,9 @@ docker-agentic-harness-sandbox/
 # Get the code
 git clone git@github.com:jammsen/docker-agentic-harness-sandbox.git
 
-# Point the stack at your model servers (defaults: DeepSeek brain @ 10.0.0.25:8888, qwen vision @ 10.0.0.13:8000)
-cp .env.example .env   # then set MODEL_URL / MODEL_ID — see "Configuring your models" 
+# Optional settings only (headroom profile, apt mirror, default tool) — models are configured
+# in the browser terminal afterwards, see "Configuring your models"
+cp .env.example .env
 
 # Build and start in the background
 ./start.sh
@@ -327,10 +324,10 @@ Claude Code ──Anthropic /v1/messages──▶ claude-shim (127.0.0.1:4001)
 ```
 
 - **`claude-shim`** (`scripts/claude-shim.js`, started by the entrypoint) is a tiny pure-stdlib proxy. Claude Code's Read tool returns images inside Anthropic `tool_result` blocks, and LiteLLM drops images nested there when translating to chat/completions (OpenAI tool-role messages cannot carry images). The shim lifts each image out of the `tool_result` into a normal user message before forwarding — the placement vLLM accepts — and streams everything else through untouched. Both the shim and the upload server are supervised: if either crashes it restarts automatically (shim within 5 s, upload server within 30 s) without disrupting running agent sessions.
-- **LiteLLM** (the `litellm` service in `compose.yml`) serves the primary model as `brain` and the image-capable one as `vision`, and translates Anthropic↔OpenAI. The stock Anthropic ids (`claude-sonnet-4-5`, `claude-haiku-4-5`) remain as compat aliases for the primary in case Claude Code ever requests a hardcoded id. The backend model is configured as `hosted_vllm/<model>` in `config/litellm-config.yaml` so LiteLLM uses chat/completions (the `openai/` prefix instead routes image requests through the OpenAI Responses API, which vLLM rejects).
-- **`reasoning-normalizer`** (`scripts/reasoning-normalizer.js`, the `reasoning-normalizer` service in `compose.yml`) sits between LiteLLM and the **brain** vLLM. DeepSeek V4 Flash streams the last reasoning token and the first answer token in a single delta with no boundary between them; LiteLLM then misfiles that thinking token into a text block and Claude Code aborts the turn with *"Content block is not a thinking block"*. The normalizer splits any such fused delta into two, so the brain looks like a well-behaved reasoning model. It is a no-op for models that don't fuse the fields (the `vision` path stays direct), and its logic is covered by `tests/test-reasoning-normalizer.js` at build and `tests/test-reasoning-normalizer-live.sh` end-to-end. See [`ideas/deepseek-thinking-block-bug.md`](ideas/deepseek-thinking-block-bug.md) for the full investigation.
+- **LiteLLM** (the `litellm` service in `compose.yml`) translates Anthropic↔OpenAI and passes every model name through as `hosted_vllm/*` to the reasoning-normalizer (`config/litellm-config.yaml` is a static wildcard). `hosted_vllm/` makes LiteLLM use chat/completions (the `openai/` prefix instead routes image requests through the OpenAI Responses API, which vLLM rejects). The normalizer resolves `brain`/`opus`/`fable`/`claude-*` to the catalog's brain, `vision`/`sonnet`/`haiku` to its vision model, and any raw id to its server.
+- **`reasoning-normalizer`** (`scripts/reasoning-normalizer.js`, the `reasoning-normalizer` service in `compose.yml`) sits between LiteLLM and every catalog server (it is also the model router, see "Configuring your models"). DeepSeek V4 Flash streams the last reasoning token and the first answer token in a single delta with no boundary between them; LiteLLM then misfiles that thinking token into a text block and Claude Code aborts the turn with *"Content block is not a thinking block"*. The normalizer splits any such fused delta into two, so the brain looks like a well-behaved reasoning model. It is a no-op for models that don't fuse the fields, and its logic is covered by `tests/test-reasoning-normalizer.js` at build and `tests/test-reasoning-normalizer-live.sh` end-to-end. See [`ideas/deepseek-thinking-block-bug.md`](ideas/deepseek-thinking-block-bug.md) for the full investigation.
 
-The model answering the request must be **vision-capable** for any of this to return a real description — in dual-model setups (`MODEL_VISION=false`) the shim routes image requests to the `VISION_MODEL_*` model automatically, so it is the vision model you should test here. If images come back as generic hallucinations, confirm the model serves vision over chat/completions:
+The model answering the request must be **vision-capable** for any of this to return a real description — when the catalog's brain has `vision: false` the shim routes image requests to the vision role automatically, so it is the vision model you should test here. If images come back as generic hallucinations, confirm the model serves vision over chat/completions:
 
 ```bash
 curl http://YOUR_VLLM_IP:8000/v1/chat/completions -H "Content-Type: application/json" -d '{

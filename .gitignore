@@ -18,3 +18,8 @@ workspace/uploads/*
 .DS_Store
 # Local model/env configuration (copy of .env.example)
 .env
+
+# Local model catalog (managed by the model-config wizard; start from models.example.yml)
+config/models/models.yml
+config/models/*.bak-*
+config/models/models.json
