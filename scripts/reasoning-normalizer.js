@@ -39,7 +39,7 @@ const MODELS_FILE = process.env.MODELS_FILE || '';   // e.g. /config/models/mode
 const fs = require('fs');
 
 // --- catalog (models.json) — re-read on mtime change, never crashes the proxy on a bad file -----
-const BRAIN_ALIASES  = new Set(['brain', 'opus', 'fable', 'claude-sonnet-4-5', 'claude-haiku-4-5']);
+const BRAIN_ALIASES  = new Set(['brain', 'opus', 'fable']);   // plus any 'claude-*' id (compat), see resolve()
 const VISION_ALIASES = new Set(['vision', 'sonnet', 'haiku']);
 let catalog = null, catalogMtime = 0, catalogWarned = false;
 function loadCatalog() {
@@ -49,9 +49,12 @@ function loadCatalog() {
   if (st.mtimeMs === catalogMtime && catalog) return catalog;
   try {
     const raw = JSON.parse(fs.readFileSync(MODELS_FILE, 'utf8'));
-    const servers = raw.servers || {}, roles = raw.roles || {};
+    const servers = {}, roles = raw.roles || {};
     const byId = {};                                    // id -> [server, ...]
-    for (const [srv, def] of Object.entries(servers)) {
+    for (const [srv, def] of Object.entries(raw.servers || {})) {
+      let url;                                          // parse once here: a bad url in a hand-edited yaml must not throw per request
+      try { url = new URL(def.url); } catch { console.error(`> catalog: server '${srv}' has an invalid url (${def.url}) — skipped`); continue; }
+      servers[srv] = { url, models: def.models || {} };
       for (const id of Object.keys(def.models || {})) (byId[id] ||= []).push(srv);
     }
     catalog = { servers, roles, byId }; catalogMtime = st.mtimeMs; catalogWarned = false;
@@ -64,17 +67,17 @@ function loadCatalog() {
 // resolve(alias) -> { id, url } | null. `server/id` wins over a bare id that happens to contain '/'.
 function resolve(alias, cat) {
   if (!cat || typeof alias !== 'string') return null;
-  const ref = BRAIN_ALIASES.has(alias) ? cat.roles.brain
+  const ref = (BRAIN_ALIASES.has(alias) || alias.startsWith('claude-')) ? cat.roles.brain
             : VISION_ALIASES.has(alias) ? (cat.roles.vision || cat.roles.brain)   // vision is optional: brain answers
             : alias;
   if (!ref) return null;
   const slash = ref.indexOf('/');
   if (slash > 0) {
     const srv = ref.slice(0, slash), id = ref.slice(slash + 1);
-    if (cat.servers[srv]?.models?.[id]) return { id, url: new URL(cat.servers[srv].url) };
+    if (cat.servers[srv]?.models?.[id]) return { id, url: cat.servers[srv].url };
   }
   const owners = cat.byId[ref] || [];
-  if (owners.length === 1) return { id: ref, url: new URL(cat.servers[owners[0]].url) };
+  if (owners.length === 1) return { id: ref, url: cat.servers[owners[0]].url };
   return null;                                          // unknown, or ambiguous (needs server/id)
 }
 // LiteLLM's api_base ends in /v1 and so does every catalog url: join "<url path>" + req.url minus "/v1".

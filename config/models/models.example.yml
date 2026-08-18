@@ -9,8 +9,9 @@
 #   vision          can this model see images? (the server can't tell us — set it yourself)
 # (Every model is routed through the reasoning-normalizer, which fixes DeepSeek-style fused
 #  reasoning+content deltas and is a no-op otherwise — nothing to configure per model.)
-# roles: exactly one brain and one vision (vision may equal brain). Every other model in the
-# catalog is still selectable inside the tools (Claude Code /model, opencode, omp pickers).
+# roles: exactly one brain; vision is optional (must be a vision-capable model, may equal brain;
+# none = images are dropped with a note). Every other model in the catalog is still selectable
+# inside the tools (Claude Code /model, opencode, omp pickers).
 servers:
   spark-brain:
     url: http://10.0.0.25:8888/v1

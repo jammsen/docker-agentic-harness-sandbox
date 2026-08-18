@@ -48,9 +48,9 @@ A companion **image upload page** runs on `https://<host>:1112`. Paste a screens
 ### Configuring your models
 
 Models are configured **inside the browser terminal**, not in `.env`: open the session, pick
-**model configuration** from the tool menu, and the wizard walks you through it. Until a brain and a
-vision model are assigned the menu shows the wizard in red and keeps the tools disabled, so nobody
-runs into gateway errors first.
+**model configuration** on the first screen, and the wizard walks you through it. Until a brain is
+assigned the menu shows the wizard in red and blocks sessions, so nobody runs into gateway errors
+first. A vision model is optional (without one, images are dropped with a note).
 
 The wizard manages one file — `config/models/models.yml` (the catalog; start from
 `config/models/models.example.yml`, hand-editing is fine too):
@@ -61,9 +61,10 @@ The wizard manages one file — `config/models/models.yml` (the catalog; start f
   can't tell us). Any number of servers; keep one model out of five on one box, another on the
   next. (DeepSeek-style fused reasoning deltas need no setting: every model goes through the
   reasoning-normalizer, which is a no-op for models that don't need it.)
-- **assign roles** — exactly one **brain** (the primary) and one **vision** (handles image
-  requests; may be the brain itself if it can see). Every other model in the catalog stays known
-  and selectable in the tools (`/model <id>` in Claude Code, the opencode and OMP pickers).
+- **assign roles** — exactly one **brain** (the primary) and optionally one **vision** (handles
+  image requests; may be the brain itself if it can see; must be marked vision-capable). Every
+  other model in the catalog stays known and selectable in the tools (`/model <id>` in Claude
+  Code, the opencode and OMP pickers).
 - **edit / delete server**, **RESET catalog** (backup kept next to the file), **write & exit**.
 
 Nothing needs a restart. On write, the wizard regenerates the tool configs (opencode, OMP —

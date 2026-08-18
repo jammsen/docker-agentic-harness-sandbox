@@ -77,6 +77,7 @@ function cfg() {
     console.log(`> catalog: brain=${cfgCache.brainId} (vision=${cfgCache.primaryHasVision}) vision=${cfgCache.visionId}`);
   } catch (e) {
     console.error(`> catalog unreadable (${e.message}) — keeping previous routing`);
+    if (!cfgCache) cfgCache = { primaryHasVision: true, visionHasVision: true, brainId: 'brain', visionId: 'vision' }; // never null: a first bad read must not throw per request
   }
   return cfgCache;
 }

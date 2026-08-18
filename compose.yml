@@ -141,7 +141,7 @@ services:
     cap_drop:
       - ALL                                       # drop every Linux capability
     pids_limit: 64                                # cap fork bombs
-    mem_limit: 128m                               # tiny proxy — hard ceiling
+    mem_limit: 512m                               # router parses+re-serializes request bodies; a 50 MB image turn needs a few copies
 
   # headroom — OPTIONAL context-compression sidecar on the brain path (issue #11), off by default;
   # enable via .env.example. Rationale, config trade-offs and gates: ideas/headroom-spike-results.md.

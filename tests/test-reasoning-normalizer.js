@@ -169,6 +169,7 @@ async function main() {
     servers: {
       a: { url: base, models: { 'deep-1': { vision: false }, 'shared': {} } },
       b: { url: `${base}/b`, models: { 'qwen-1': { vision: true }, 'shared': {} } },   // /v1/b: distinguishable path
+      broken: { url: 'not a url', models: { 'ghost': {} } },                             // must be skipped, not crash
     },
     roles: { brain: 'a/deep-1', vision: 'b/qwen-1' },
   });
@@ -179,6 +180,7 @@ async function main() {
       ['brain',            'deep-1', '/v1/chat/completions'],
       ['opus',             'deep-1', '/v1/chat/completions'],
       ['claude-sonnet-4-5','deep-1', '/v1/chat/completions'],
+      ['claude-3-5-haiku-20241022','deep-1', '/v1/chat/completions'],   // any claude-* id -> brain
       ['vision',           'qwen-1', '/v1/b/chat/completions'],
       ['haiku',            'qwen-1', '/v1/b/chat/completions'],
       ['qwen-1',           'qwen-1', '/v1/b/chat/completions'],   // bare id, unique
@@ -193,7 +195,9 @@ async function main() {
     }
     check(`router: ${cases.length}/${cases.length} aliases resolve to the right model + server path`, ok === cases.length);
 
-    let r = await post(JSON.stringify({ model: 'shared' }));
+    let r = await post(JSON.stringify({ model: 'ghost' }));
+    check('router: server with invalid url is skipped (404, no crash)', r.status === 404);
+    r = await post(JSON.stringify({ model: 'shared' }));
     check('router: ambiguous bare id (on two servers) is rejected with 404', r.status === 404 && /not in the catalog/.test(r.body));
     r = await post(JSON.stringify({ model: 'nope' }));
     check('router: unknown model -> 404 with the wizard hint', r.status === 404 && /model configuration/.test(r.body));

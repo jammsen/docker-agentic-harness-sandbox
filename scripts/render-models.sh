@@ -32,7 +32,7 @@ command -v yq >/dev/null || { ee ">>> render-models: yq missing"; exit 1; }
 _install() {
     local src="$1" dst="$2"
     mkdir -p "$(dirname "$dst")"
-    cp "$src" "$dst"; chmod 644 "$dst"
+    cp "$src" "$dst.tmp" && chmod 644 "$dst.tmp" && mv -f "$dst.tmp" "$dst"   # rename = readers never see a partial file
     if [[ "$EUID" -eq 0 ]]; then chown "$OWNER" "$dst" "$(dirname "$dst")" 2>/dev/null || true; fi
     e "> Rendered $(basename "$dst") from the model catalog"
 }

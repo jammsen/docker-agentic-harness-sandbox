@@ -66,8 +66,16 @@ validate() {
     if [[ $(count_models) -eq 0 ]]; then echo "no models in the catalog"; ok=1; fi
     if [[ -z "$b" ]]; then echo "role 'brain' is not assigned"; ok=1
     elif ! model_exists "$b"; then echo "role 'brain' -> '$b' does not exist"; ok=1; fi
-    # vision is OPTIONAL (none = brain answers everything, images are dropped with a note)
-    if [[ -n "$v" ]] && ! model_exists "$v"; then echo "role 'vision' -> '$v' does not exist"; ok=1; fi
+    # vision is OPTIONAL (none = brain answers everything, images are dropped with a note) but must be able to see
+    if [[ -n "$v" ]]; then
+        if ! model_exists "$v"; then echo "role 'vision' -> '$v' does not exist"; ok=1
+        elif [[ "$(model_field "${v%%/*}" "${v#*/}" vision)" != "true" ]]; then echo "role 'vision' -> '$v' is marked vision: false"; ok=1; fi
+    fi
+    local u
+    for s in $(servers); do
+        u="$(server_url "$s")"
+        [[ "$u" =~ ^https?://[^[:space:]/]+(/[^[:space:]]*)?$ ]] || { echo "server '$s': url '$u' is not a valid http(s) URL"; ok=1; }
+    done
     # every model needs the numeric fields the tools render
     local ref s m f val
     for ref in $(all_models); do
@@ -143,10 +151,11 @@ pick_model() {
         list+=("$ref")
     done
     if [[ ${#list[@]} -eq 0 && "$only_vision" == "vision" ]]; then
-        ew "No vision-capable model in the catalog — any model can be picked (images will then fail), or n) none." >&2
-        for ref in $(all_models); do list+=("$ref"); done
+        ew "No vision-capable model in the catalog (mark one with vision=yes when adding it)." >&2
+        [[ -n "$allow_none" ]] || { echo ""; return 0; }
+    elif [[ ${#list[@]} -eq 0 ]]; then
+        ew "No matching models in the catalog." >&2; echo ""; return 0
     fi
-    [[ ${#list[@]} -gt 0 ]] || { ew "No matching models in the catalog." >&2; echo ""; return 0; }
     for i in "${!list[@]}"; do
         s="${list[$i]%%/*}"; m="${list[$i]#*/}"
         local vis=""; [[ "$(model_field "$s" "$m" vision)" == "true" ]] && vis=" ${DIM}(vision)${NC}"
@@ -385,12 +394,13 @@ action_write() {
     elif [[ -n "$problems" ]]; then
         echo "${YELLOW}$problems${NC}"
     fi
+    local bak=""
     if [[ -s "$CFG" ]]; then
-        local bak="$CFG.bak-$(date +%Y%m%d-%H%M%S)"; cp "$CFG" "$bak"; ei "previous catalog kept as $(basename "$bak")"
+        bak="$CFG.bak-$(date +%Y%m%d-%H%M%S)"; cp "$CFG" "$bak"; ei "previous catalog kept as $(basename "$bak")"
     fi
     cp "$WORK" "$CFG"; chmod 644 "$CFG"
     es "written: $CFG"
-    render || ew "render step reported a problem — see above"
+    render || { ew "render failed — restoring the previous catalog"; [[ -n "${bak:-}" ]] && cp "$bak" "$CFG" && render >/dev/null 2>&1; return 1; }
     return 0
 }
 

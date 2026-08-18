@@ -26,10 +26,10 @@ function visionFromCatalog() {
   const file = process.env.MODELS_FILE || `${process.env.HOME || '/home/agent'}/.config/models/models.json`;
   try {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
-    const ref = String(raw.roles?.vision || ''); const i = ref.indexOf('/');
+    const ref = String(raw.roles?.vision || raw.roles?.brain || ''); const i = ref.indexOf('/');   // no vision role -> the brain, if it can see
     if (i <= 0) return null;
-    const srv = raw.servers?.[ref.slice(0, i)];
-    return srv?.url ? { url: srv.url, id: ref.slice(i + 1) } : null;
+    const srv = raw.servers?.[ref.slice(0, i)], id = ref.slice(i + 1);
+    return srv?.url && srv.models?.[id]?.vision === true ? { url: srv.url, id } : null;
   } catch { return null; }
 }
 const fromCatalog = visionFromCatalog();
