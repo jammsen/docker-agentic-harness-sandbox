@@ -22,12 +22,21 @@ ENV DEBIAN_FRONTEND=noninteractive \
 ARG APT_MIRROR=""
 # ForceIPv4: apt's IPv6 attempts stall behind Docker Desktop/WSL2 NAT. docker-clean would empty
 # the .deb cache after every install, defeating the BuildKit cache mounts on the RUNs below.
-RUN if [ -n "$APT_MIRROR" ]; then \
-      sed -i -E "s#https?://(archive|security)\.ubuntu\.com/ubuntu/?#$APT_MIRROR#g" /etc/apt/sources.list.d/ubuntu.sources; \
-    fi \
-    && printf 'Acquire::ForceIPv4 "true";\n' > /etc/apt/apt.conf.d/99force-ipv4 \
+RUN printf 'Acquire::ForceIPv4 "true";\n' > /etc/apt/apt.conf.d/99force-ipv4 \
     && rm -f /etc/apt/apt.conf.d/docker-clean \
     && printf 'Binary::apt::APT::Keep-Downloaded-Packages "true";\n' > /etc/apt/apt.conf.d/99keep-debs
+
+# Bootstrap TLS trust from the stock (GPG-verified, http) archive BEFORE the mirror switch, so
+# APT_MIRROR may be https — only this one package ever rides plain http (apt http-path bugs like
+# CVE-2019-3462 are the threat model; everything after goes TLS).
+# hadolint ignore=DL3008,DL3009
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends --no-install-suggests ca-certificates
+
+RUN if [ -n "$APT_MIRROR" ]; then \
+      sed -i -E "s#https?://(archive|security)\.ubuntu\.com/ubuntu/?#$APT_MIRROR#g" /etc/apt/sources.list.d/ubuntu.sources; \
+    fi
 
 # Install basic tools
 # hadolint ignore=DL3008,DL3009 # Base-Image Ubuntu 26.04 is already pinned

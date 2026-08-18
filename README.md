@@ -154,7 +154,7 @@ docker-agentic-harness-sandbox/
 # Get the code
 git clone git@github.com:jammsen/docker-agentic-harness-sandbox.git
 
-# Point the stack at your model servers (defaults: DeepSeek brain @ 10.0.0.55:8888, qwen vision @ 10.0.0.13:8000)
+# Point the stack at your model servers (defaults: DeepSeek brain @ 10.0.0.25:8888, qwen vision @ 10.0.0.13:8000)
 cp .env.example .env   # then set MODEL_URL / MODEL_ID — see "Configuring your models" 
 
 # Build and start in the background

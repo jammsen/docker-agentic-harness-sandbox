@@ -1,7 +1,7 @@
 # Research: "API Error: Content block is not a thinking block"
 
 Investigated 2026-07-16/17. Everything below was measured against the real vLLM boxes
-(`10.0.0.55:8888` deepseek, `10.0.0.13:8000` qwen) with throwaway probe containers on the compose
+(`10.0.0.25:8888` deepseek, `10.0.0.13:8000` qwen) with throwaway probe containers on the compose
 network. The live stack was never touched.
 
 ## Problem
@@ -280,7 +280,7 @@ fix may land slower. Option 1's normalizer is invariant to both columns.
 
 - **SSRF guard**: LAN backends need `network_config.allow_private_network: true`. The Anthropic
   surface hides the cause behind a generic `provider_connection_failed`; the **OpenAI** surface
-  shows the real one (`connection to private IP 10.0.0.55 is not allowed`).
+  shows the real one (`connection to private IP 10.0.0.25 is not allowed`).
 - Docker tag `2.1.29` is **not** the gateway image (no entrypoint, no arch) — use `latest`.
 - Config lives at `/app/data/config.json`; the mounted volume *is* the app-dir.
 - `LOG_LEVEL=debug` is an **env var**, not a flag — the entrypoint builds the `main` invocation

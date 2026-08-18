@@ -4,7 +4,7 @@
 # standard dual-model setup: DeepSeek V4 Flash as the text-only brain,
 # Qwen3.6 35B as the vision model for image requests.
 x-model-env: &model-env
-  MODEL_URL: ${MODEL_URL:-http://10.0.0.55:8888/v1}              # OpenAI-compatible API base incl. /v1
+  MODEL_URL: ${MODEL_URL:-http://10.0.0.25:8888/v1}              # OpenAI-compatible API base incl. /v1
   MODEL_ID: ${MODEL_ID:-deepseek-v4-flash-dspark}                # exact model id from GET $MODEL_URL/models
   MODEL_NAME: ${MODEL_NAME:-DeepSeek V4 Flash DSpark}            # display name in tool pickers
   MODEL_CONTEXT: ${MODEL_CONTEXT:-1000000}                       # context window budget for the tools
@@ -127,7 +127,7 @@ services:
     image: node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2
     container_name: agentic-reasoning-normalizer
     environment:
-      VLLM_UPSTREAM: ${MODEL_URL:-http://10.0.0.55:8888/v1}   # the REAL brain vLLM; only host:port are used
+      VLLM_UPSTREAM: ${MODEL_URL:-http://10.0.0.25:8888/v1}   # the REAL brain vLLM; only host:port are used
       NORMALIZER_PORT: "4002"
       UPSTREAM_TIMEOUT_MS: "3600000"                          # 60m idle read timeout — matches the rest of the chain (see litellm request_timeout)
     extra_hosts:
@@ -167,6 +167,10 @@ services:
       HEADROOM_NO_SUBSCRIPTION_TRACKING: "1"      # we have no Anthropic subscription to poll
       HEADROOM_REQUEST_TIMEOUT: "3600"            # 60m — matches the rest of the timeout chain
       HEADROOM_MODE: token                        # cache mode froze all turns (zero compression); token mode may rewrite prior turns
+      # Kompress size gate OFF. The gate (>50k tok) exists to bound ONNX inference, but with Kompress
+      # not installed it only ever reroutes oversized payloads to the LogCompressor — which turned a
+      # kubectl YAML dump into 13 tokens (0/20 needles, mislabelled router:config). Off = passthrough.
+      HEADROOM_KOMPRESS_MAX_TOKENS: "0"
     # Every flag is load-bearing and --intercept-tool-results must stay OFF (it deletes code
     # bodies); rationale + measurements in ideas/headroom-spike-results.md.
     command: ["headroom", "proxy", "--host", "0.0.0.0", "--port", "8787",

@@ -71,6 +71,23 @@ def gen_code_needle():
     q = "What number does the function get_shard_seed() in shards.py return?"
     return base(q, "read_file", {"path": "shards.py"}, "# shards.py\n" + "\n".join(fns))
 
+def gen_text_needle():
+    # ~94k tokens of plain log text, one error outlier. Probes the router:search/code_aware
+    # misroute that deleted 94k -> 99 tokens in the spike (ideas/headroom-spike-results.md).
+    rng = random.Random(23)
+    services = ["api", "auth", "billing", "ingest", "scheduler", "webhook"]
+    lines = []; approx = 0
+    while approx < 64000 * 4:
+        l = (f"2026-07-18T{rng.randint(0,23):02d}:{rng.randint(0,59):02d}:{rng.randint(0,59):02d}Z "
+             f"{rng.choice(services)} level=info request_id=R-{rng.randint(0,99999):05d} "
+             f"status={rng.choice([200,200,200,201,204,404,500])} latency_ms={rng.randint(40,900)} "
+             f"bytes={rng.randint(200,90000)}")
+        lines.append(l); approx += len(l) + 1
+    lines[len(lines)//2] = ("2026-07-18T11:22:33Z api level=error request_id=X-9313-TTK "
+                            "status=500 latency_ms=8317 bytes=17")
+    q = "What is the latency_ms of request X-9313-TTK?"
+    return base(q, "get_logs", {"service": "all"}, "\n".join(lines))
+
 def gen_stream_hygiene():
     # Multi-turn + thinking + tools declared: the reasoning-normalizer scenario, with the tool
     # surface present so an injected headroom_* tool would have somewhere to show up.
@@ -86,6 +103,7 @@ def gen_stream_hygiene():
 
 GEN = {"json-needle": (gen_json_needle, str(NEEDLE_LATENCY)),
        "code-needle": (gen_code_needle, str(MAGIC_CONSTANT)),
+       "text-needle": (gen_text_needle, "8317"),   # slow (~94k prefill) — opt-in via SCENARIOS
        "stream-hygiene": (gen_stream_hygiene, "6")}
 
 def validate(scenario, path):
