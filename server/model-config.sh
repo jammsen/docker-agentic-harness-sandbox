@@ -12,6 +12,12 @@
 #
 # On write, offers to recreate catalog-render + litellm so the change actually takes effect —
 # reasoning-normalizer re-reads models.json on its own (mtime watch), no restart needed there.
+#
+# Reasoning-effort tiers: any model can be exposed as several litellm model_names that all serve
+# the SAME real backend id, each with a different baked-in reasoning_effort (`serves_as` +
+# `reasoning_effort` fields — see scripts/render-litellm-config.sh) — picking a "model" in a client
+# then really means picking an effort tier. Asked automatically when adding a model, or manage
+# them later via edit server -> 5.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,6 +59,14 @@ model_field()   { local s="$1" m="$2" f="$3"; _j -r --arg s "$s" --arg m "$m" --
 all_models()    { local s; for s in $(servers); do local m; for m in $(server_models "$s"); do echo "$s/$m"; done; done; }
 count_models()  { all_models | grep -c . || true; }
 
+# Models sharing the same served id (real vLLM model), i.e. reasoning-effort variants of one
+# another — everything whose `serves_as` matches this real id, or the entry AT that id itself.
+sibling_variants() {
+    local s="$1" real_id="$2"
+    _j -r --arg s "$s" --arg id "$real_id" \
+        '.servers[$s].models // {} | to_entries[] | select((.value.serves_as // .key) == $id) | .key'
+}
+
 # ---------------------------------------------------------------- probing
 # probe_models <url> -> lines "id<TAB>max_model_len<TAB>root" ; returns 1 on failure.
 # Straight GET <url>/models — this wizard runs on the server host, so it reaches your real vLLM
@@ -79,8 +93,12 @@ overview() {
         printf "  %d) %-14s %-36s %s model(s)\n" "$i" "$s" "$url" "$n"
         local m
         for m in $(server_models "$s"); do
-            local ctx root; ctx="$(model_field "$s" "$m" context)"; root="$(model_field "$s" "$m" root)"
-            printf "     - %-38s ctx %-10s%s\n" "$m" "${ctx:-?}" "${root:+  ${DIM}$root${NC}}"
+            local ctx root serves effort tag
+            ctx="$(model_field "$s" "$m" context)"; root="$(model_field "$s" "$m" root)"
+            serves="$(model_field "$s" "$m" serves_as)"; effort="$(model_field "$s" "$m" reasoning_effort)"
+            tag=""
+            if [[ -n "$effort" ]]; then tag=" ${GREEN}[reasoning_effort=$effort, serves ${serves:-$m}]${NC}"; fi
+            printf "     - %-38s ctx %-10s%s%s\n" "$m" "${ctx:-?}" "${root:+  ${DIM}$root${NC}}" "$tag"
         done
     done
     echo ""
@@ -133,9 +151,43 @@ add_models_from_server() {
                 [[ "$ctx" =~ ^[0-9]+$ ]] && break; ew "  number please"
             done
         fi
-        S="$s" M="$id" C="$ctx" R="$root" _ji --arg s "$s" --arg m "$id" --arg c "$ctx" --arg r "$root" \
-            '.servers[$s].models[$m] = (if $r == "" then {context: ($c|tonumber)} else {context: ($c|tonumber), root: $r} end)'
+        add_model_with_effort_variants "$s" "$id" "$ctx" "$root"
+    done
+}
+
+# store_model_entry <server> <alias> <ctx> <root> <serves_as|""> <reasoning_effort|"">: the one
+# place that actually writes a models.json entry (single model or one reasoning-effort variant).
+store_model_entry() {
+    local s="$1" alias="$2" ctx="$3" root="$4" serves="$5" effort="$6"
+    _ji --arg s "$s" --arg m "$alias" --arg c "$ctx" --arg r "$root" --arg sv "$serves" --arg e "$effort" \
+        '.servers[$s].models[$m] = ({context: ($c|tonumber)}
+            + (if $r  == "" then {} else {root: $r} end)
+            + (if $sv == "" then {} else {serves_as: $sv} end)
+            + (if $e  == "" then {} else {reasoning_effort: $e} end))'
+}
+
+# add_model_with_effort_variants <server> <real-id> <ctx> <root>: asks whether this model should be
+# exposed as several reasoning-effort tiers (each a separate litellm model_name, all pointing at the
+# SAME real served id via `serves_as` — see render-litellm-config.sh) or as one plain model.
+add_model_with_effort_variants() {
+    local s="$1" id="$2" ctx="$3" root="$4"
+    echo ""
+    read -r -p "  Reasoning-effort levels for $id, comma-separated (e.g. low,medium,high; empty = single model, no effort tiers): " levels
+    if [[ -z "$levels" ]]; then
+        store_model_entry "$s" "$id" "$ctx" "$root" "" ""
         es "  added $s/$id"
+        return 0
+    fi
+    local lvl alias
+    IFS=', ' read -ra levels_arr <<< "$levels"
+    for lvl in "${levels_arr[@]}"; do
+        [[ -n "$lvl" ]] || continue
+        alias="${id}-${lvl}"
+        if server_models "$s" | grep -Fx -- "$alias" >/dev/null; then
+            ew "  $s/$alias already exists — skipped (edit or remove it first)"; continue
+        fi
+        store_model_entry "$s" "$alias" "$ctx" "$root" "$id" "$lvl"
+        es "  added $s/$alias  (reasoning_effort=$lvl, serves $id)"
     done
 }
 
@@ -176,6 +228,7 @@ action_edit_server() {
     echo "  2) remove a model"
     echo "  3) change URL (then looks up models on the new URL)"
     echo "  4) rename server"
+    echo "  5) add/manage reasoning-effort variants for a model"
     local c; read -r -p "Choice (empty = back): " c
     case "$c" in
         1) add_models_from_server "$s" ;;
@@ -210,8 +263,37 @@ action_edit_server() {
             done
             _ji --arg o "$s" --arg n "$new" '.servers = (.servers | to_entries | map(if .key == $o then .key = $n else . end) | from_entries)'
             es "renamed $s -> $new" ;;
+        5) manage_effort_variants "$s" ;;
         *) return 0 ;;
     esac
+}
+
+# manage_effort_variants <server>: pick any existing catalog entry, treat its real served id
+# (its `serves_as`, or itself if it's plain) as the base, show its current reasoning-effort
+# siblings, and offer to add more tiers on top (context/root copied from the picked entry).
+manage_effort_variants() {
+    local s="$1" mlist=() m i
+    for m in $(server_models "$s"); do mlist+=("$m"); done
+    [[ ${#mlist[@]} -gt 0 ]] || { ew "no models on $s"; return 0; }
+    for i in "${!mlist[@]}"; do echo "  $((i+1))) ${mlist[$i]}"; done
+    local sel; read -r -p "Base which model on (number, empty = cancel): " sel
+    [[ "$sel" =~ ^[0-9]+$ ]] && [[ $sel -ge 1 && $sel -le ${#mlist[@]} ]] || return 0
+    local picked="${mlist[$((sel-1))]}" real_id ctx root
+    real_id="$(model_field "$s" "$picked" serves_as)"; [[ -n "$real_id" ]] || real_id="$picked"
+    ctx="$(model_field "$s" "$picked" context)"; root="$(model_field "$s" "$picked" root)"
+
+    echo ""; echo "Real served model: $real_id  (ctx $ctx${root:+, $root})"
+    local existing; existing="$(sibling_variants "$s" "$real_id")"
+    if [[ -n "$existing" ]]; then
+        echo "Existing entries for it:"
+        echo "$existing" | while read -r e; do
+            local eff; eff="$(model_field "$s" "$e" reasoning_effort)"
+            printf "  - %-38s%s\n" "$e" "${eff:+  reasoning_effort=$eff}"
+        done
+    else
+        echo "No variants yet — it's a single plain entry."
+    fi
+    add_model_with_effort_variants "$s" "$real_id" "$ctx" "$root"
 }
 
 action_delete_server() {
