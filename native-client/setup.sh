@@ -277,6 +277,16 @@ ctx_for_id() {
     for i in "${!ids[@]}"; do [[ "${ids[$i]}" == "$id" ]] && { echo "${ctxs[$i]:-131072}"; return; }; done
     echo "131072"
 }
+# srv_for_id: the catalog's own server/group label for a model (from model_info.server, see
+# ../server/scripts/render-litellm-config.sh), or "upstream" when the probe carried none (a raw
+# vLLM box with no server grouping, or the plain /v1/models fallback) — mirrors how the server's
+# own model-config.sh groups models under a server name, purely for display/provider naming; every
+# group still talks to the SAME server_url, there is no separate connection per group.
+srv_for_id() {
+    local id="$1" i
+    for i in "${!ids[@]}"; do [[ "${ids[$i]}" == "$id" ]] && { echo "${srvs[$i]:-upstream}"; return; }; done
+    echo "upstream"
+}
 
 action_configure() {
     # 1. which tool(s) — first, before anything else is asked
@@ -358,21 +368,27 @@ action_configure() {
     # /v1/models for a raw vLLM box — same two-step probe as the other wizards in this repo.
     echo
     echo "Checking $server_url ..."
-    ids=(); ctxs=()
+    ids=(); ctxs=(); srvs=()
     local probe_base="${server_url%/v1}"
     body="$(curl -fsS -m 10 "$probe_base/model/info" 2>/dev/null || true)"
     if [[ -n "$body" ]] && echo "$body" | jq -e '.data' >/dev/null 2>&1; then
-        while IFS=$'\t' read -r id ctx; do
+        # jq emits "-" instead of "" for a missing field: IFS=$'\t' `read` treats tab as
+        # whitespace-class, so two REAL empty fields in a row (e.g. no max_model_len AND no
+        # server) collapse into one delimiter and silently shift every later column left —
+        # a "-" placeholder keeps every column non-empty so none of them ever collapse.
+        while IFS=$'\t' read -r id ctx srv; do
             [[ -n "$id" ]] || continue
-            ids+=("$id"); ctxs+=("${ctx:-}")
-        done < <(echo "$body" | jq -r '.data[]? | [.model_name, (.model_info.max_model_len // "")] | @tsv')
+            [[ "$ctx" == "-" ]] && ctx=""
+            [[ "$srv" == "-" ]] && srv=""
+            ids+=("$id"); ctxs+=("${ctx:-}"); srvs+=("${srv:-}")
+        done < <(echo "$body" | jq -r '.data[]? | [.model_name, (.model_info.max_model_len // "-"), (.model_info.server // "-")] | @tsv')
     fi
     if [[ ${#ids[@]} -eq 0 ]]; then
         body="$(curl -fsS -m 10 "$server_url/models" 2>/dev/null || true)"
         while IFS=$'\t' read -r id ctx; do
             [[ -n "$id" ]] || continue
             [[ "$id" == "*" ]] && continue
-            ids+=("$id"); ctxs+=("${ctx:-}")
+            ids+=("$id"); ctxs+=("${ctx:-}"); srvs+=("")
         done < <(echo "$body" | jq -r '.data[]? | [.id, (.max_model_len // "")] | @tsv' 2>/dev/null || true)
     fi
     if [[ ${#ids[@]} -eq 0 ]]; then
@@ -385,18 +401,18 @@ action_configure() {
 
     # 5. the rest — pick brain/vision, write config for each selected tool
     echo "Models on this server:"
-    for i in "${!ids[@]}"; do printf "  %d) %-30s ctx %s\n" "$((i+1))" "${ids[$i]}" "${ctxs[$i]:-?}"; done
+    for i in "${!ids[@]}"; do printf "  %d) %-30s ctx %-9s%s\n" "$((i+1))" "${ids[$i]}" "${ctxs[$i]:-?}" "${srvs[$i]:+  [${srvs[$i]}]}"; done
     echo
 
     # "brain" / "vision" are Claude Code concepts only (claude-shim's image-reroute logic) —
     # OpenCode and OMP just get one model, no role concept at all, so don't ask a vision
     # question that would never be used for them.
-    local sel brain brain_vision_ans brain_vision vision=""
+    local sel brain brain_ctx brain_vision_ans brain_vision vision=""
     local brain_prompt="Which model is your brain (number, required): "
     $want_claude || brain_prompt="Which model do you want to use (number, required): "
     while true; do
         read -r -p "$brain_prompt" sel
-        [[ "$sel" =~ ^[0-9]+$ ]] && [[ "$sel" -ge 1 && "$sel" -le ${#ids[@]} ]] && { brain="${ids[$((sel-1))]}"; break; }
+        [[ "$sel" =~ ^[0-9]+$ ]] && [[ "$sel" -ge 1 && "$sel" -le ${#ids[@]} ]] && { brain="${ids[$((sel-1))]}"; brain_ctx="${ctxs[$((sel-1))]:-}"; break; }
         ew "enter a number from the list"
     done
     brain_vision=true
@@ -413,6 +429,36 @@ action_configure() {
                 [[ "$sel" =~ ^[0-9]+$ ]] && [[ "$sel" -ge 1 && "$sel" -le ${#ids[@]} ]] && vision="${ids[$((sel-1))]}"
             fi
         fi
+    fi
+
+    # OpenCode can hold several models at once and switch between them (its /models command) —
+    # unlike Claude Code (fixed opus/sonnet/haiku/fable aliases) and OMP (single modelRoles.default),
+    # so ask separately which extra ones (besides the one just picked above) to also make available.
+    local opencode_models=("$brain")
+    if $want_opencode && [[ ${#ids[@]} -gt 1 ]]; then
+        echo
+        echo "OpenCode can have several models loaded to switch between (its /models command)."
+        for i in "${!ids[@]}"; do
+            [[ "${ids[$i]}" == "$brain" ]] && continue
+            printf "  %d) %-30s ctx %-9s%s\n" "$((i+1))" "${ids[$i]}" "${ctxs[$i]:-?}" "${srvs[$i]:+  [${srvs[$i]}]}"
+        done
+        read -r -p "Also add which for OpenCode? (numbers like 2,4 or 'all', empty = just $brain): " sel
+        if [[ -n "$sel" ]]; then
+            if [[ "${sel,,}" == "all" ]]; then
+                for i in "${!ids[@]}"; do opencode_models+=("${ids[$i]}"); done
+            else
+                IFS=', ' read -ra parts <<< "$sel"
+                for p in "${parts[@]}"; do
+                    [[ "$p" =~ ^[0-9]+$ ]] && [[ "$p" -ge 1 && "$p" -le ${#ids[@]} ]] && opencode_models+=("${ids[$((p-1))]}") || ew "ignoring '$p'"
+                done
+            fi
+        fi
+        # dedupe, preserving order (brain stays first -> stays the default model)
+        local seen="" deduped=() m
+        for m in "${opencode_models[@]}"; do
+            case " $seen " in *" $m "*) ;; *) deduped+=("$m"); seen+=" $m" ;; esac
+        done
+        opencode_models=("${deduped[@]}")
     fi
 
     # searXNG web search — same MCP server the sandbox wires up (mcp-searxng via npx), but only
@@ -475,14 +521,26 @@ EOF
         backup "$CLAUDE_SETTINGS"
         [[ -f "$CLAUDE_SETTINGS" ]] || echo '{}' > "$CLAUDE_SETTINGS"
         tmp="$(mktemp)"
-        jq '.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:3999"
+        # Claude Code validates model ids against its own built-in catalog to know each model's
+        # real context window; it doesn't know "opus"/"brain" etc. are just claude-shim aliases
+        # (resolved later, against the model catalog above), so it warns and falls back to
+        # assuming 200k for auto-compact. Tell it the brain's REAL window directly when the
+        # server reported one (the model-list probe above already asked for it) so auto-compact
+        # doesn't compact way too early on a model that actually has more headroom.
+        jq --arg ctx "${brain_ctx:-}" '.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:3999"
           | .env.ANTHROPIC_API_KEY = "dummy"
           | .env.ANTHROPIC_DEFAULT_OPUS_MODEL = "opus"
           | .env.ANTHROPIC_DEFAULT_SONNET_MODEL = "sonnet"
           | .env.ANTHROPIC_DEFAULT_HAIKU_MODEL = "haiku"
-          | .env.ANTHROPIC_DEFAULT_FABLE_MODEL = "fable"' \
+          | .env.ANTHROPIC_DEFAULT_FABLE_MODEL = "fable"
+          | if ($ctx | test("^[0-9]+$")) then .env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = $ctx else . end' \
           "$CLAUDE_SETTINGS" > "$tmp" && mv "$tmp" "$CLAUDE_SETTINGS"
         echo "  merged env vars into $CLAUDE_SETTINGS (existing settings preserved)"
+        if [[ -n "${brain_ctx:-}" ]]; then
+            echo "  set CLAUDE_CODE_MAX_CONTEXT_TOKENS=$brain_ctx (from the server's reported context length for '$brain')"
+        else
+            ew "  server didn't report a context length for '$brain' — CLAUDE_CODE_MAX_CONTEXT_TOKENS not set, Claude Code will assume 200k for auto-compact"
+        fi
         # Claude Code's own first-run wizard (theme pick, trust dialog, "is this API key OK?"
         # prompt for the dummy key claude-shim expects) lives in ~/.claude.json, separate from
         # settings.json above — same fields the sandbox pre-seeds
@@ -507,14 +565,29 @@ EOF
         backup "$OC_CONFIG"
         [[ -f "$OC_CONFIG" ]] || echo '{"$schema": "https://opencode.ai/config.json"}' > "$OC_CONFIG"
         local tmp; tmp="$(mktemp)"
-        jq --arg url "$server_url" --arg brain "$brain" '
-          .provider.upstream = {
-            "npm": "@ai-sdk/openai-compatible", "name": "upstream",
-            "options": {"baseURL": $url},
-            "models": {($brain): {"name": $brain}}
-          } | .model = ("upstream/" + $brain)' \
+        # Group selected models by their catalog server label (srv_for_id) so OpenCode shows the
+        # SAME grouping as the server's own model-config.sh (spark01/4gpusrv/...) instead of one
+        # flat "upstream" provider — every group still hits the same $server_url, this is purely
+        # organizational (litellm/the normalizer is the only real endpoint either way).
+        local m; local providers_json
+        providers_json="$( { for m in "${opencode_models[@]}"; do printf '%s\t%s\n' "$(srv_for_id "$m")" "$m"; done; } | jq -R -s --arg url "$server_url" '
+          split("\n") | map(select(length>0) | split("\t")) |
+          group_by(.[0]) | map({
+            key: .[0][0],
+            value: {
+              npm: "@ai-sdk/openai-compatible", name: .[0][0],
+              options: {baseURL: $url},
+              models: (map({key: .[1], value: {name: .[1]}}) | from_entries)
+            }
+          }) | from_entries
+        ')"
+        local brain_group; brain_group="$(srv_for_id "$brain")"
+        jq --argjson providers "$providers_json" --arg model "$brain_group/$brain" '
+          del(.provider.upstream)
+          | .provider = ((.provider // {}) + $providers)
+          | .model = $model' \
           "$OC_CONFIG" > "$tmp" && mv "$tmp" "$OC_CONFIG"
-        echo "  merged provider into $OC_CONFIG (existing settings preserved)"
+        echo "  merged provider(s) into $OC_CONFIG (existing settings preserved) — models: ${opencode_models[*]}"
         if [[ -n "$searxng_url" ]]; then
             tmp="$(mktemp)"
             jq --arg url "$searxng_url" '
