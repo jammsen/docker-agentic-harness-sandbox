@@ -21,6 +21,7 @@ ENVFILE="$CONFIG_DIR/env"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 CLAUDE_JSON="$HOME/.claude.json"
 OC_CONFIG="$HOME/.config/opencode/opencode.json"
+OC_TUI_CONFIG="$HOME/.config/opencode/tui.json"
 OMP_MODELS="$HOME/.omp/agent/models.yml"
 OMP_CONFIG="$HOME/.omp/agent/config.yml"
 OMP_MCP="$HOME/.omp/agent/mcp.json"
@@ -103,6 +104,8 @@ opencode_summary() {
     echo "server $url, model=$model, searxng=$searxng"
 }
 
+opencode_tps_installed() { [[ -f "$OC_TUI_CONFIG" ]] && jq -e '.plugin // [] | index("@mesaleh/opencode-tps")' "$OC_TUI_CONFIG" >/dev/null 2>&1; }
+
 omp_configured() { [[ -f "$OMP_MODELS" ]] && grep -q '^  upstream:' "$OMP_MODELS" 2>/dev/null; }
 omp_searxng_configured() { [[ -f "$OMP_MCP" ]] && jq -e '.mcpServers.searxng' "$OMP_MCP" >/dev/null 2>&1; }
 omp_summary() {
@@ -154,6 +157,11 @@ overview() {
             local nstr="${RED}NOT installed${NC} — claude-shim.js won't run without it"
             command -v node >/dev/null && nstr="${GREEN}installed${NC}"
             printf "    ${DIM}└─ node (for claude-shim.js, not for claude itself):${NC} %s\n" "$nstr"
+        fi
+        if [[ "$name" == "opencode" ]]; then
+            local tstr="${RED}not installed${NC}"
+            opencode_tps_installed && tstr="${GREEN}installed${NC}"
+            printf "    ${DIM}└─ opencode-tps plugin (tok/s meter):${NC} %s\n" "$tstr"
         fi
         if [[ "$name" == "opencode" ]] && opencode_searxng_configured && ! node_ok_for_searxng; then
             printf "    ${DIM}└─${NC} ${YELLOW}searxng configured but will fail — node is $(node_version_str), mcp-searxng needs >=22${NC}\n"
@@ -268,6 +276,34 @@ action_install() {
     if [[ "$sel" == *1* || "${sel,,}" == "all" || "$sel" == "4" ]] && ! command -v node >/dev/null; then
         ew "note: Claude Code itself doesn't need node, but this project's claude-shim.js does"
         ew "(it's a plain .js file, not a compiled binary) — install Node.js separately (nodejs.org)"
+    fi
+}
+
+# ---------------------------------------------------------------- opencode-tps plugin
+# @mesaleh/opencode-tps — live tok/s meter for the OpenCode TUI (npmjs.com/package/@mesaleh/
+# opencode-tps). Not installed via npm directly: opencode's own `plugin` subcommand fetches it and
+# records it in tui.json's "plugin" array (global install -> $OC_TUI_CONFIG), same as any other
+# opencode plugin — so "installed" here means "listed in that file", not "on npm's global path".
+action_install_opencode_tps() {
+    echo ""
+    echo "opencode-tps — live tok/s meter for the OpenCode TUI, with a persistent avg/max/min"
+    echo "summary after each response (https://www.npmjs.com/package/@mesaleh/opencode-tps)."
+    if opencode_tps_installed; then
+        es "already installed — listed in $OC_TUI_CONFIG"
+        return 0
+    fi
+    if ! installed opencode; then
+        ew "OpenCode isn't installed."
+        install_tool opencode "OpenCode" 'curl -fsSL https://opencode.ai/install | bash' || return 1
+    fi
+    read -r -p "Install @mesaleh/opencode-tps globally ('opencode plugin @mesaleh/opencode-tps -g')? [y/N]: " ans
+    [[ "${ans,,}" == "y" ]] || return 1
+    backup "$OC_TUI_CONFIG"
+    opencode plugin @mesaleh/opencode-tps -g
+    if opencode_tps_installed; then
+        es "opencode-tps installed"
+    else
+        ew "command ran, but $OC_TUI_CONFIG doesn't list the plugin yet — check the command's own output above"
     fi
 }
 
@@ -408,8 +444,8 @@ action_configure() {
     # OpenCode and OMP just get one model, no role concept at all, so don't ask a vision
     # question that would never be used for them.
     local sel brain brain_ctx brain_vision_ans brain_vision vision=""
-    local brain_prompt="Which model is your brain (number, required): "
-    $want_claude || brain_prompt="Which model do you want to use (number, required): "
+    local brain_prompt="Which model is your brain / primary model (number, required): "
+    $want_claude || brain_prompt="Which model is your primary model (number, required): "
     while true; do
         read -r -p "$brain_prompt" sel
         [[ "$sel" =~ ^[0-9]+$ ]] && [[ "$sel" -ge 1 && "$sel" -le ${#ids[@]} ]] && { brain="${ids[$((sel-1))]}"; brain_ctx="${ctxs[$((sel-1))]:-}"; break; }
@@ -650,12 +686,14 @@ EOF
 while true; do
     overview
     echo "  r) install requirements   i) install a tool         c) configure a tool (point at a server, install searxng mcp)"
+    echo "  t) install opencode plugin (tok/s meter)"
     echo "  q) quit"
     read -r -p "Choice: " choice
     case "$choice" in
         r) action_install_requirements ;;
         i) action_install ;;
         c) action_configure ;;
+        t) action_install_opencode_tps ;;
         q) break ;;
         *) ew "unknown choice" ;;
     esac
