@@ -94,14 +94,18 @@ claude_summary() {
     echo "server $up, brain=$brain${vision:+, vision=$vision}"
 }
 
-opencode_configured() { [[ -f "$OC_CONFIG" ]] && jq -e '.provider.upstream' "$OC_CONFIG" >/dev/null 2>&1; }
+opencode_configured() { [[ -f "$OC_CONFIG" ]] && jq -e '[.provider[]?.options.baseURL] | any' "$OC_CONFIG" >/dev/null 2>&1; }
 opencode_searxng_configured() { [[ -f "$OC_CONFIG" ]] && jq -e '.mcp.searxng' "$OC_CONFIG" >/dev/null 2>&1; }
 opencode_summary() {
-    local url model searxng="no"
-    url="$(jq -r '.provider.upstream.options.baseURL // "?"' "$OC_CONFIG" 2>/dev/null)"
+    local url model searxng="no" vision="no"
+    url="$(jq -r '[.provider[]?.options.baseURL] | map(select(.)) | first // "?"' "$OC_CONFIG" 2>/dev/null)"
     model="$(jq -r '.model // "?"' "$OC_CONFIG" 2>/dev/null)"
     opencode_searxng_configured && searxng="yes"
-    echo "server $url, model=$model, searxng=$searxng"
+    # vision reflects the DEFAULT model only (.model, "group/id") — OpenCode has no role concept,
+    # so this is the one model actually in use unless the user switches via /models mid-session.
+    jq -e --arg m "$model" '($m | split("/")) as $p | .provider[$p[0]].models[$p[1]].attachment == true' \
+      "$OC_CONFIG" >/dev/null 2>&1 && vision="yes"
+    echo "server $url, model=$model, vision=$vision, searxng=$searxng"
 }
 
 opencode_tps_installed() { [[ -f "$OC_TUI_CONFIG" ]] && jq -e '.plugin // [] | index("@mesaleh/opencode-tps")' "$OC_TUI_CONFIG" >/dev/null 2>&1; }
@@ -380,7 +384,7 @@ action_configure() {
         [[ -n "$up" ]] && default_url="${up%/}/v1"
     fi
     if [[ -z "$default_url" ]] && $want_opencode && [[ -f "$OC_CONFIG" ]]; then
-        default_url="$(jq -r '.provider.upstream.options.baseURL // ""' "$OC_CONFIG" 2>/dev/null)"
+        default_url="$(jq -r '[.provider[]?.options.baseURL] | map(select(.)) | first // ""' "$OC_CONFIG" 2>/dev/null)"
     fi
     if [[ -z "$default_url" ]] && $want_omp && [[ -f "$OMP_MODELS" ]]; then
         default_url="$(grep -m1 'baseUrl:' "$OMP_MODELS" 2>/dev/null | sed 's/.*baseUrl: *//')"
@@ -440,10 +444,21 @@ action_configure() {
     for i in "${!ids[@]}"; do printf "  %d) %-30s ctx %-9s%s\n" "$((i+1))" "${ids[$i]}" "${ctxs[$i]:-?}" "${srvs[$i]:+  [${srvs[$i]}]}"; done
     echo
 
-    # "brain" / "vision" are Claude Code concepts only (claude-shim's image-reroute logic) —
-    # OpenCode and OMP just get one model, no role concept at all, so don't ask a vision
-    # question that would never be used for them.
+    # "brain" / "vision" ROLES are a Claude Code concept only (claude-shim's image-reroute
+    # logic) — OpenCode and OMP have no role concept, they just get a model list. OpenCode DOES
+    # still need to know per-model whether a model can see images: it gates its own attachment
+    # UI on that, and NOT via any role/catalog — verified against opencode's own source
+    # (packages/core/src/v1/config/provider.ts's Model schema + the merge in
+    # packages/opencode/src/provider/provider.ts): capabilities.attachment and
+    # capabilities.input.image come from THIS model's own `attachment`/`modalities` fields in
+    # opencode.json, falling back to a models.dev registry lookup by model id — which a local
+    # vLLM-served model like this will never be in. Without attachment/modalities set explicitly,
+    # OpenCode silently blocks every attachment with "this model does not support image input",
+    # even though the server itself accepts images fine. Asked below per-model (vision_map),
+    # reusing whatever the Claude brain/vision answer already established for the same model id
+    # so nothing gets asked twice.
     local sel brain brain_ctx brain_vision_ans brain_vision vision=""
+    local -A vision_map=()
     local brain_prompt="Which model is your brain / primary model (number, required): "
     $want_claude || brain_prompt="Which model is your primary model (number, required): "
     while true; do
@@ -455,6 +470,7 @@ action_configure() {
     if $want_claude; then
         read -r -p "Is '$brain' vision-capable? [y/N]: " brain_vision_ans
         brain_vision=false; [[ "${brain_vision_ans,,}" == "y" ]] && brain_vision=true
+        vision_map["$brain"]="$brain_vision"
 
         if [[ "$brain_vision" == "false" ]]; then
             echo
@@ -464,6 +480,7 @@ action_configure() {
             if [[ -n "$sel" ]]; then
                 [[ "$sel" =~ ^[0-9]+$ ]] && [[ "$sel" -ge 1 && "$sel" -le ${#ids[@]} ]] && vision="${ids[$((sel-1))]}"
             fi
+            [[ -n "$vision" ]] && vision_map["$vision"]=true
         fi
     fi
 
@@ -495,6 +512,19 @@ action_configure() {
             case " $seen " in *" $m "*) ;; *) deduped+=("$m"); seen+=" $m" ;; esac
         done
         opencode_models=("${deduped[@]}")
+    fi
+
+    # Vision, per OpenCode model (see the vision_map comment above for why this exists at all).
+    # Skips any model vision_map already has an answer for — e.g. the brain, if $want_claude also
+    # ran above and answered for the same id.
+    if $want_opencode; then
+        echo
+        local vans
+        for m in "${opencode_models[@]}"; do
+            [[ -v vision_map[$m] ]] && continue
+            read -r -p "Can '$m' see images (vision)? [y/N]: " vans
+            vision_map["$m"]=false; [[ "${vans,,}" == "y" ]] && vision_map["$m"]=true
+        done
     fi
 
     # searXNG web search — same MCP server the sandbox wires up (mcp-searxng via npx), but only
@@ -606,14 +636,20 @@ EOF
         # flat "upstream" provider — every group still hits the same $server_url, this is purely
         # organizational (litellm/the normalizer is the only real endpoint either way).
         local m; local providers_json
-        providers_json="$( { for m in "${opencode_models[@]}"; do printf '%s\t%s\n' "$(srv_for_id "$m")" "$m"; done; } | jq -R -s --arg url "$server_url" '
+        # Third TSV column carries vision_map's answer for this model — the only place that flag
+        # reaches opencode.json, since OpenCode has no role system to hang it off of. A "true"
+        # emits attachment/modalities so OpenCode's own capability gate (see the vision_map
+        # comment above) actually lets an image through instead of blocking it client-side.
+        providers_json="$( { for m in "${opencode_models[@]}"; do printf '%s\t%s\t%s\n' "$(srv_for_id "$m")" "$m" "${vision_map[$m]:-false}"; done; } | jq -R -s --arg url "$server_url" '
           split("\n") | map(select(length>0) | split("\t")) |
           group_by(.[0]) | map({
             key: .[0][0],
             value: {
               npm: "@ai-sdk/openai-compatible", name: .[0][0],
               options: {baseURL: $url},
-              models: (map({key: .[1], value: {name: .[1]}}) | from_entries)
+              models: (map({key: .[1], value: ({name: .[1]} + (if .[2] == "true" then
+                {attachment: true, modalities: {input: ["text","image"], output: ["text"]}}
+              else {} end))}) | from_entries)
             }
           }) | from_entries
         ')"
@@ -624,6 +660,13 @@ EOF
           | .model = $model' \
           "$OC_CONFIG" > "$tmp" && mv "$tmp" "$OC_CONFIG"
         echo "  merged provider(s) into $OC_CONFIG (existing settings preserved) — models: ${opencode_models[*]}"
+        local vis_list=""
+        for m in "${opencode_models[@]}"; do [[ "${vision_map[$m]:-false}" == "true" ]] && vis_list+="$m "; done
+        if [[ -n "$vis_list" ]]; then
+            echo "  vision-capable: ${vis_list% }"
+        else
+            ew "  none of these models marked vision-capable — image attachments will be rejected client-side"
+        fi
         if [[ -n "$searxng_url" ]]; then
             tmp="$(mktemp)"
             jq --arg url "$searxng_url" '

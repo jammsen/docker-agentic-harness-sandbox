@@ -51,16 +51,29 @@ bsrv="${brain%%/*}"; bid="${brain#*/}"
 bctx="$(S="$bsrv" M="$bid" yq -r '.servers[strenv(S)].models[strenv(M)].context // 0' "$CATALOG")"
 bmax="$(S="$bsrv" M="$bid" yq -r '.servers[strenv(S)].models[strenv(M)].max_tokens // 16384' "$CATALOG")"
 
-# 2) opencode.json — providers keyed by server name; model = "<server>/<id>" is opencode's own format
+# 2) opencode.json — providers keyed by server name; model = "<server>/<id>" is opencode's own format.
+# Built with jq against $tmp/models.json (the JSON twin from step 1), not yq against the YAML
+# directly — yq v4's expression language has no if/then/else, so the vision -> attachment/
+# modalities conditional below can't be written in it; jq is already a hard dependency of this
+# same step (line below), so this trades nothing for being able to express the condition at all.
+# vision -> attachment: true + modalities is what makes OpenCode's own client-side capability
+# gate (packages/core/src/v1/config/provider.ts's Model schema in opencode's source) actually let
+# an image through instead of silently blocking every attachment with "this model does not
+# support image input" — the catalog's vision flag alone (used by claude-shim/analyze-image.js)
+# never reaches OpenCode's own attachment check on its own.
 if [[ -f "$TPL/opencode.json" ]]; then
-    yq -o json '
+    jq '
       .servers | to_entries | map({"key": .key, "value": {
         "npm": "@ai-sdk/openai-compatible", "name": .key,
         "options": {"baseURL": .value.url},
-        "models": ((.value.models // {}) | to_entries | map({"key": .key, "value": {
+        "models": ((.value.models // {}) | to_entries | map({"key": .key, "value": ({
             "name": .value.name, "limit": {"context": .value.context, "output": .value.max_tokens},
-            "options": {"preserve_thinking": false}}}) | from_entries)
-      }}) | from_entries' "$CATALOG" > "$tmp/providers.json"
+            "options": {"preserve_thinking": false}}
+            + (if .value.vision == true then
+                {"attachment": true, "modalities": {"input": ["text","image"], "output": ["text"]}}
+              else {} end))
+          }) | from_entries)
+      }}) | from_entries' "$tmp/models.json" > "$tmp/providers.json"
     jq --slurpfile prov "$tmp/providers.json" --arg model "$brain" --argjson max "$bmax" \
        --arg searxng "${SEARXNG_URL:?SEARXNG_URL not set}" \
        '.provider = $prov[0] | .model = $model | .agent.build.maxTokens = $max
