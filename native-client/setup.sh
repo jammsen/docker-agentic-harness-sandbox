@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# setup.sh — overview-driven manager for native (no Docker) Claude Code, OpenCode, and OMP: check
-# what's installed and configured, install a missing tool, or point one at a running ../server/
-# instance. Same shape as the sandbox's model-config.sh and the server's own model-config.sh —
-# show current state first, then a lettered menu — not a forced linear wizard.
+# setup.sh — overview-driven manager for native (no Docker) Claude Code, OpenCode, OMP, and
+# Hermes Agent: check what's installed and configured, install a missing tool, or point one at a
+# running ../server/ instance. Same shape as the sandbox's model-config.sh and the server's own
+# model-config.sh — show current state first, then a lettered menu — not a forced linear wizard.
 #
 #   - Claude Code speaks Anthropic's wire format only, so it goes through claude-shim.js (this
 #     directory) for translation/dispatch — same logic as the sandbox client's shim, just running
 #     locally instead of in a container. Needs node.
-#   - OpenCode and OMP already speak OpenAI natively, so they're pointed straight at the resolved
-#     server's own address — no shim, no node needed for them.
+#   - OpenCode, OMP, and Hermes Agent already speak OpenAI natively, so they're pointed straight
+#     at the resolved server's own address — no shim, no node needed for them (node only matters
+#     for their optional searXNG MCP server, which runs via npx).
 #
 # Installs a tool via its official installer if you ask (same ones the sandbox's Dockerfile uses).
 # Any existing config this touches is backed up first, next to the original file, timestamped —
@@ -25,6 +26,7 @@ OC_TUI_CONFIG="$HOME/.config/opencode/tui.json"
 OMP_MODELS="$HOME/.omp/agent/models.yml"
 OMP_CONFIG="$HOME/.omp/agent/config.yml"
 OMP_MCP="$HOME/.omp/agent/mcp.json"
+HERMES_CONFIG="$HOME/.hermes/config.yaml"
 
 RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'; DIM=$'\033[2m'; NC=$'\033[0m'
 e()  { echo "$*"; }
@@ -43,12 +45,12 @@ command -v jq >/dev/null || { ee ">>> jq is required (apt install jq / brew inst
 # ourselves, every time, before reporting status on anything.
 refresh_path_for() {
     local bin="$1" d
-    for d in "$HOME/.local/bin" "$HOME/.opencode/bin" "$HOME/.omp/bin" "$HOME/.claude/bin" "$HOME/bin"; do
+    for d in "$HOME/.local/bin" "$HOME/.opencode/bin" "$HOME/.omp/bin" "$HOME/.claude/bin" "$HOME/.hermes/bin" "$HOME/bin"; do
         [[ -x "$d/$bin" ]] || continue
         case ":$PATH:" in *":$d:"*) ;; *) PATH="$d:$PATH"; export PATH ;; esac
     done
 }
-refresh_all_paths() { local b; for b in claude opencode omp; do refresh_path_for "$b"; done; refresh_nvm_node; }
+refresh_all_paths() { local b; for b in claude opencode omp hermes; do refresh_path_for "$b"; done; refresh_nvm_node; }
 
 # If node was installed via nvm (see install_node_via_nvm below), it doesn't live in one of
 # the fixed directories refresh_path_for scans — nvm keeps versions under ~/.nvm/versions/node/*
@@ -97,7 +99,7 @@ claude_summary() {
 opencode_configured() { [[ -f "$OC_CONFIG" ]] && jq -e '[.provider[]?.options.baseURL] | any' "$OC_CONFIG" >/dev/null 2>&1; }
 opencode_searxng_configured() { [[ -f "$OC_CONFIG" ]] && jq -e '.mcp.searxng' "$OC_CONFIG" >/dev/null 2>&1; }
 opencode_summary() {
-    local url model searxng="no" vision="no"
+    local url model searxng="no" vision="no" ctx=""
     url="$(jq -r '[.provider[]?.options.baseURL] | map(select(.)) | first // "?"' "$OC_CONFIG" 2>/dev/null)"
     model="$(jq -r '.model // "?"' "$OC_CONFIG" 2>/dev/null)"
     opencode_searxng_configured && searxng="yes"
@@ -105,7 +107,8 @@ opencode_summary() {
     # so this is the one model actually in use unless the user switches via /models mid-session.
     jq -e --arg m "$model" '($m | split("/")) as $p | .provider[$p[0]].models[$p[1]].attachment == true' \
       "$OC_CONFIG" >/dev/null 2>&1 && vision="yes"
-    echo "server $url, model=$model, vision=$vision, searxng=$searxng"
+    ctx="$(jq -r --arg m "$model" '($m | split("/")) as $p | .provider[$p[0]].models[$p[1]].limit.context // ""' "$OC_CONFIG" 2>/dev/null)"
+    echo "server $url, model=$model${ctx:+, ctx=$ctx}, vision=$vision, searxng=$searxng"
 }
 
 opencode_tps_installed() { [[ -f "$OC_TUI_CONFIG" ]] && jq -e '.plugin // [] | index("@mesaleh/opencode-tps")' "$OC_TUI_CONFIG" >/dev/null 2>&1; }
@@ -120,10 +123,62 @@ omp_summary() {
     echo "server $url, model=$brain, searxng=$searxng"
 }
 
+# Hermes Agent (~/.hermes/config.yaml) — YAML, so these helpers do shallow line-scan parsing of
+# exactly the blocks this script writes (a top-level key ends the previous block). Good enough
+# for status display; the writes themselves go through `hermes config set` (see below), which
+# parses YAML properly. \047 below is a single quote, so both YAML quoting styles are stripped.
+hermes_model_field() {
+    [[ -f "$HERMES_CONFIG" ]] || return 0
+    awk -v key="$1" '
+        /^model:/ { f=1; next }
+        f && /^[^ \t#]/ { exit }
+        f && $1 == key ":" { sub(/^[^:]*:[ \t]*/, ""); gsub(/"/, ""); gsub(/\047/, ""); print; exit }
+    ' "$HERMES_CONFIG"
+}
+hermes_configured() {
+    [[ "$(hermes_model_field provider)" == "custom" ]] || return 1
+    [[ -n "$(hermes_model_field base_url)" && -n "$(hermes_model_field default)" ]]
+}
+hermes_vision_configured() {
+    [[ -f "$HERMES_CONFIG" ]] || return 1
+    awk '
+        /^providers:/ { f=1; next }
+        f && /^[^ \t#]/ { exit }
+        f && /supports_vision:[ \t]*true/ { found=1; exit }
+        END { exit !found }
+    ' "$HERMES_CONFIG"
+}
+hermes_searxng_configured() {
+    [[ -f "$HERMES_CONFIG" ]] || return 1
+    awk '
+        /^mcp_servers:/ { f=1; next }
+        f && /^[^ \t#]/ { exit }
+        f && /^[ \t]+searxng:/ { found=1; exit }
+        END { exit !found }
+    ' "$HERMES_CONFIG"
+}
+hermes_searxng_url() {
+    [[ -f "$HERMES_CONFIG" ]] || return 0
+    # Indent widths are fixed (top 0 / server 2 / keys+env 4 / env vars 6) — they match both
+    # the fresh-config heredoc below and `hermes config set`'s own YAML output (indent 2).
+    awk '
+        /^[^ \t]/ { outer = ($0 ~ /^mcp_servers:/); srv=0; env=0 }
+        outer && /^  searxng:/ { srv=1; next }
+        srv && /^    env:/ { env=1; next }
+        env && /^      SEARXNG_URL:/ { sub(/^ +SEARXNG_URL:[ \t]*/, ""); gsub(/"/, ""); gsub(/\047/, ""); print; exit }
+        env && /^    [^ \t]/ { env=0 }
+        srv && /^  [^ \t]/ { srv=0 }
+    ' "$HERMES_CONFIG"
+}
+hermes_summary() {
+    local ctx; ctx="$(hermes_model_field context_length)"
+    echo "server $(hermes_model_field base_url), model=$(hermes_model_field default)${ctx:+, ctx=$ctx}, vision=$(hermes_vision_configured && echo yes || echo no), searxng=$(hermes_searxng_configured && echo yes || echo no)"
+}
+
 overview() {
     refresh_all_paths   # unconditional, every call — never show stale install status
     echo ""
-    e "Native client  ${DIM}(no Docker — Claude Code / OpenCode / OMP)${NC}"
+    e "Native client  ${DIM}(no Docker — Claude Code / OpenCode / OMP / Hermes Agent)${NC}"
     echo ""
     local curl_s jq_s nvm_s node_s
     curl_s="$(command -v curl >/dev/null && echo "${GREEN}OK${NC}" || echo "${RED}missing${NC}")"
@@ -139,19 +194,21 @@ overview() {
     printf "  Requirements: curl %s, jq %s, nvm %s, node %s\n" "$curl_s" "$jq_s" "$nvm_s" "$node_s"
     echo ""
     local name inst conf summary
-    for name in claude opencode omp; do
+    for name in claude opencode omp hermes; do
         case "$name" in
             claude)   inst=$(installed claude && echo y || echo n);   conf=$(claude_configured && echo y || echo n) ;;
             opencode) inst=$(installed opencode && echo y || echo n); conf=$(opencode_configured && echo y || echo n) ;;
             omp)      inst=$(installed omp && echo y || echo n);      conf=$(omp_configured && echo y || echo n) ;;
+            hermes)   inst=$(installed hermes && echo y || echo n);   conf=$(hermes_configured && echo y || echo n) ;;
         esac
-        local label; case "$name" in claude) label="Claude Code";; opencode) label="OpenCode";; omp) label="OMP";; esac
+        local label; case "$name" in claude) label="Claude Code";; opencode) label="OpenCode";; omp) label="OMP";; hermes) label="Hermes Agent";; esac
         local istr="${RED}not installed${NC}"; [[ "$inst" == y ]] && istr="${GREEN}installed${NC}"
         if [[ "$conf" == y ]]; then
             case "$name" in
                 claude)   summary="$(claude_summary)" ;;
                 opencode) summary="$(opencode_summary)" ;;
                 omp)      summary="$(omp_summary)" ;;
+                hermes)   summary="$(hermes_summary)" ;;
             esac
             printf "  %-12s %s  ${DIM}—${NC} configured: %s\n" "$label" "$istr" "$summary"
         else
@@ -171,6 +228,9 @@ overview() {
             printf "    ${DIM}└─${NC} ${YELLOW}searxng configured but will fail — node is $(node_version_str), mcp-searxng needs >=22${NC}\n"
         fi
         if [[ "$name" == "omp" ]] && omp_searxng_configured && ! node_ok_for_searxng; then
+            printf "    ${DIM}└─${NC} ${YELLOW}searxng configured but will fail — node is $(node_version_str), mcp-searxng needs >=22${NC}\n"
+        fi
+        if [[ "$name" == "hermes" ]] && hermes_searxng_configured && ! node_ok_for_searxng; then
             printf "    ${DIM}└─${NC} ${YELLOW}searxng configured but will fail — node is $(node_version_str), mcp-searxng needs >=22${NC}\n"
         fi
     done
@@ -262,22 +322,25 @@ action_install() {
     echo "  1) Claude Code"
     echo "  2) OpenCode"
     echo "  3) OMP"
-    echo "  4) All not-yet-installed"
+    echo "  4) Hermes Agent"
+    echo "  5) All not-yet-installed"
     read -r -p "Install which? (numbers like 1,3 or 'all', empty = cancel): " sel
     [[ -n "$sel" ]] || return 0
     case "${sel,,}" in
-        all|4)
-            installed claude   || install_tool claude   "Claude Code" 'curl -fsSL https://claude.ai/install.sh | bash' || true
-            installed opencode || install_tool opencode  "OpenCode"    'curl -fsSL https://opencode.ai/install | bash' || true
-            installed omp      || install_tool omp       "OMP"         'curl -fsSL https://omp.sh/install | sh' || true
+        all|5)
+            installed claude   || install_tool claude   "Claude Code"   'curl -fsSL https://claude.ai/install.sh | bash' || true
+            installed opencode || install_tool opencode  "OpenCode"      'curl -fsSL https://opencode.ai/install | bash' || true
+            installed omp      || install_tool omp       "OMP"           'curl -fsSL https://omp.sh/install | sh' || true
+            installed hermes   || install_tool hermes    "Hermes Agent"  'curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash' || true
             ;;
         *)
-            [[ "$sel" == *1* ]] && { install_tool claude   "Claude Code" 'curl -fsSL https://claude.ai/install.sh | bash' || true; }
-            [[ "$sel" == *2* ]] && { install_tool opencode "OpenCode"    'curl -fsSL https://opencode.ai/install | bash' || true; }
-            [[ "$sel" == *3* ]] && { install_tool omp      "OMP"         'curl -fsSL https://omp.sh/install | sh' || true; }
+            [[ "$sel" == *1* ]] && { install_tool claude   "Claude Code"   'curl -fsSL https://claude.ai/install.sh | bash' || true; }
+            [[ "$sel" == *2* ]] && { install_tool opencode "OpenCode"      'curl -fsSL https://opencode.ai/install | bash' || true; }
+            [[ "$sel" == *3* ]] && { install_tool omp      "OMP"           'curl -fsSL https://omp.sh/install | sh' || true; }
+            [[ "$sel" == *4* ]] && { install_tool hermes   "Hermes Agent"  'curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash' || true; }
             ;;
     esac
-    if [[ "$sel" == *1* || "${sel,,}" == "all" || "$sel" == "4" ]] && ! command -v node >/dev/null; then
+    if [[ "$sel" == *1* || "${sel,,}" == "all" || "$sel" == "5" ]] && ! command -v node >/dev/null; then
         ew "note: Claude Code itself doesn't need node, but this project's claude-shim.js does"
         ew "(it's a plain .js file, not a compiled binary) — install Node.js separately (nodejs.org)"
     fi
@@ -317,6 +380,11 @@ ctx_for_id() {
     for i in "${!ids[@]}"; do [[ "${ids[$i]}" == "$id" ]] && { echo "${ctxs[$i]:-131072}"; return; }; done
     echo "131072"
 }
+out_for_id() {
+    local id="$1" i
+    for i in "${!ids[@]}"; do [[ "${ids[$i]}" == "$id" ]] && { echo "${outs[$i]:-}"; return; }; done
+    echo ""
+}
 # srv_for_id: the catalog's own server/group label for a model (from model_info.server, see
 # ../server/scripts/render-litellm-config.sh), or "upstream" when the probe carried none (a raw
 # vLLM box with no server grouping, or the plain /v1/models fallback) — mirrors how the server's
@@ -330,29 +398,33 @@ srv_for_id() {
 
 action_configure() {
     # 1. which tool(s) — first, before anything else is asked
-    local line_claude line_opencode line_omp
+    local line_claude line_opencode line_omp line_hermes
     line_claude="$(installed claude && echo installed || echo "not installed")"
     claude_configured && line_claude="$line_claude — $(claude_summary)"
     line_opencode="$(installed opencode && echo installed || echo "not installed")"
     opencode_configured && line_opencode="$line_opencode — $(opencode_summary)"
     line_omp="$(installed omp && echo installed || echo "not installed")"
     omp_configured && line_omp="$line_omp — $(omp_summary)"
+    line_hermes="$(installed hermes && echo installed || echo "not installed")"
+    hermes_configured && line_hermes="$line_hermes — $(hermes_summary)"
 
     echo ""
     echo "Which tool do you want to configure?"
     echo "  1) Claude Code   ($line_claude)"
     echo "  2) OpenCode      ($line_opencode)"
     echo "  3) OMP           ($line_omp)"
-    echo "  4) All three"
+    echo "  4) Hermes Agent  ($line_hermes)"
+    echo "  5) All four"
     read -r -p "Choice (numbers like 1,3 or 'all', empty = cancel): " tool_sel
     [[ -n "$tool_sel" ]] || return 0
-    local want_claude=false want_opencode=false want_omp=false
+    local want_claude=false want_opencode=false want_omp=false want_hermes=false
     case "${tool_sel,,}" in
-        all|4) want_claude=true; want_opencode=true; want_omp=true ;;
+        all|5) want_claude=true; want_opencode=true; want_omp=true; want_hermes=true ;;
         *)
             [[ "$tool_sel" == *1* ]] && want_claude=true
             [[ "$tool_sel" == *2* ]] && want_opencode=true
             [[ "$tool_sel" == *3* ]] && want_omp=true
+            [[ "$tool_sel" == *4* ]] && want_hermes=true
             ;;
     esac
 
@@ -370,7 +442,11 @@ action_configure() {
         ew "OMP isn't installed."
         install_tool omp "OMP" 'curl -fsSL https://omp.sh/install | sh' || want_omp=false
     fi
-    if ! $want_claude && ! $want_opencode && ! $want_omp; then
+    if $want_hermes && ! installed hermes; then
+        ew "Hermes Agent isn't installed."
+        install_tool hermes "Hermes Agent" 'curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash' || want_hermes=false
+    fi
+    if ! $want_claude && ! $want_opencode && ! $want_omp && ! $want_hermes; then
         ew "nothing left to configure"
         return 0
     fi
@@ -388,6 +464,9 @@ action_configure() {
     fi
     if [[ -z "$default_url" ]] && $want_omp && [[ -f "$OMP_MODELS" ]]; then
         default_url="$(grep -m1 'baseUrl:' "$OMP_MODELS" 2>/dev/null | sed 's/.*baseUrl: *//')"
+    fi
+    if [[ -z "$default_url" ]] && $want_hermes; then
+        default_url="$(hermes_model_field base_url)"
     fi
 
     echo
@@ -408,7 +487,7 @@ action_configure() {
     # /v1/models for a raw vLLM box — same two-step probe as the other wizards in this repo.
     echo
     echo "Checking $server_url ..."
-    ids=(); ctxs=(); srvs=()
+    ids=(); ctxs=(); srvs=(); outs=()
     local probe_base="${server_url%/v1}"
     body="$(curl -fsS -m 10 "$probe_base/model/info" 2>/dev/null || true)"
     if [[ -n "$body" ]] && echo "$body" | jq -e '.data' >/dev/null 2>&1; then
@@ -416,20 +495,21 @@ action_configure() {
         # whitespace-class, so two REAL empty fields in a row (e.g. no max_model_len AND no
         # server) collapse into one delimiter and silently shift every later column left —
         # a "-" placeholder keeps every column non-empty so none of them ever collapse.
-        while IFS=$'\t' read -r id ctx srv; do
+        while IFS=$'\t' read -r id ctx srv out; do
             [[ -n "$id" ]] || continue
             [[ "$ctx" == "-" ]] && ctx=""
             [[ "$srv" == "-" ]] && srv=""
-            ids+=("$id"); ctxs+=("${ctx:-}"); srvs+=("${srv:-}")
-        done < <(echo "$body" | jq -r '.data[]? | [.model_name, (.model_info.max_model_len // "-"), (.model_info.server // "-")] | @tsv')
+            [[ "$out" == "-" ]] && out=""
+            ids+=("$id"); ctxs+=("${ctx:-}"); srvs+=("${srv:-}"); outs+=("${out:-}")
+        done < <(echo "$body" | jq -r '.data[]? | [.model_name, (.model_info.max_model_len // "-"), (.model_info.server // "-"), (.model_info.max_output_tokens // "-")] | @tsv')
     fi
     if [[ ${#ids[@]} -eq 0 ]]; then
         body="$(curl -fsS -m 10 "$server_url/models" 2>/dev/null || true)"
-        while IFS=$'\t' read -r id ctx; do
+        while IFS=$'\t' read -r id ctx out; do
             [[ -n "$id" ]] || continue
             [[ "$id" == "*" ]] && continue
-            ids+=("$id"); ctxs+=("${ctx:-}"); srvs+=("")
-        done < <(echo "$body" | jq -r '.data[]? | [.id, (.max_model_len // "")] | @tsv' 2>/dev/null || true)
+            ids+=("$id"); ctxs+=("${ctx:-}"); srvs+=(""); outs+=("${out:-}")
+        done < <(echo "$body" | jq -r '.data[]? | [.id, (.max_model_len // ""), (.max_output_tokens // "")] | @tsv' 2>/dev/null || true)
     fi
     if [[ ${#ids[@]} -eq 0 ]]; then
         ew "could not find any real models at $server_url"
@@ -527,11 +607,27 @@ action_configure() {
         done
     fi
 
+    # Vision for Hermes (see the vision_map comment above for why this exists at all): Hermes
+    # only gets ONE model here — its config is a single default model — and it cannot discover a
+    # self-hosted model's vision capability on its own: its probes are the models.dev catalog
+    # (a local vLLM/LiteLLM model will never be in it) and an Ollama-specific endpoint probe.
+    # With the capability unknown, Hermes silently routes every attached image through its
+    # vision_analyze auxiliary model (a lossy text description) instead of sending it natively —
+    # the same trap OpenCode's attachment flag fixes. So the answer is written explicitly, and
+    # an explicit false is just as important as a true (it pins the mode instead of leaving it
+    # to probes). Skipped when a previous answer already covered this model id.
+    if $want_hermes && [[ ! -v vision_map[$brain] ]]; then
+        echo
+        local hvans
+        read -r -p "Can '$brain' see images (vision)? [y/N]: " hvans
+        vision_map["$brain"]=false; [[ "${hvans,,}" == "y" ]] && vision_map["$brain"]=true
+    fi
+
     # searXNG web search — same MCP server the sandbox wires up (mcp-searxng via npx), but only
-    # meaningful for OpenCode/OMP: neither the sandbox nor this script gives Claude Code a search
-    # MCP server, so don't ask about it unless one of those two is actually selected.
+    # meaningful for OpenCode/OMP/Hermes: neither the sandbox nor this script gives Claude Code a
+    # search MCP server, so don't ask about it unless one of those is actually selected.
     local searxng_url=""
-    if $want_opencode || $want_omp; then
+    if $want_opencode || $want_omp || $want_hermes; then
         # prefer whatever's already configured for a selected tool over a freshly-guessed
         # default, so re-running this against an existing setup doesn't silently change it.
         local searxng_default=""
@@ -540,6 +636,9 @@ action_configure() {
         fi
         if [[ -z "$searxng_default" ]] && $want_omp && omp_searxng_configured; then
             searxng_default="$(jq -r '.mcpServers.searxng.env.SEARXNG_URL // ""' "$OMP_MCP" 2>/dev/null)"
+        fi
+        if [[ -z "$searxng_default" ]] && $want_hermes && hermes_searxng_configured; then
+            searxng_default="$(hermes_searxng_url)"
         fi
         local already=""
         [[ -n "$searxng_default" ]] && already=" ${DIM}(already configured)${NC}"
@@ -640,16 +739,29 @@ EOF
         # reaches opencode.json, since OpenCode has no role system to hang it off of. A "true"
         # emits attachment/modalities so OpenCode's own capability gate (see the vision_map
         # comment above) actually lets an image through instead of blocking it client-side.
-        providers_json="$( { for m in "${opencode_models[@]}"; do printf '%s\t%s\t%s\n' "$(srv_for_id "$m")" "$m" "${vision_map[$m]:-false}"; done; } | jq -R -s --arg url "$server_url" '
+        # Fourth/fifth columns carry the server-reported context/output windows: without a
+        # per-model `limit`, OpenCode falls back to its models.dev catalog (a local model is
+        # never in it) and then defaults limit.context/limit.output to 0
+        # (packages/opencode/src/provider/provider.ts: `model.limit?.context ?? 0`) — every
+        # context-usage percentage then shows as 0% forever, and auto-compact has no window to
+        # work with. Output is only reported by LiteLLM's /model/info; when absent it defaults
+        # to 16384 (same maxTokens the OMP path below assumes) since opencode's limit schema
+        # requires both fields.
+        providers_json="$( { for m in "${opencode_models[@]}"; do printf '%s\t%s\t%s\t%s\t%s\n' "$(srv_for_id "$m")" "$m" "${vision_map[$m]:-false}" "$(ctx_for_id "$m")" "$(out_for_id "$m")"; done; } | jq -R -s --arg url "$server_url" '
           split("\n") | map(select(length>0) | split("\t")) |
           group_by(.[0]) | map({
             key: .[0][0],
             value: {
               npm: "@ai-sdk/openai-compatible", name: .[0][0],
               options: {baseURL: $url},
-              models: (map({key: .[1], value: ({name: .[1]} + (if .[2] == "true" then
-                {attachment: true, modalities: {input: ["text","image"], output: ["text"]}}
-              else {} end))}) | from_entries)
+              models: (map({key: .[1], value: ({name: .[1]}
+                + (if .[2] == "true" then
+                  {attachment: true, modalities: {input: ["text","image"], output: ["text"]}}
+                else {} end)
+                + (if (.[3] | test("^[0-9]+$")) then
+                  {limit: {context: (.[3] | tonumber),
+                           output: (if (.[4] | test("^[0-9]+$")) then (.[4] | tonumber) else 16384 end)}}
+                else {} end))}) | from_entries)
             }
           }) | from_entries
         ')"
@@ -667,6 +779,11 @@ EOF
         else
             ew "  none of these models marked vision-capable — image attachments will be rejected client-side"
         fi
+        local ctx_list=""
+        for m in "${opencode_models[@]}"; do
+            [[ "$(ctx_for_id "$m")" =~ ^[0-9]+$ ]] && ctx_list+="$m=$(ctx_for_id "$m") "
+        done
+        [[ -n "$ctx_list" ]] && echo "  context limits written: ${ctx_list% }"
         if [[ -n "$searxng_url" ]]; then
             tmp="$(mktemp)"
             jq --arg url "$searxng_url" '
@@ -676,6 +793,78 @@ EOF
                 "enabled": true
               }' "$OC_CONFIG" > "$tmp" && mv "$tmp" "$OC_CONFIG"
             echo "  added searxng MCP server ($searxng_url) to $OC_CONFIG"
+        fi
+    fi
+
+    if $want_hermes; then
+        echo; echo "-- Hermes Agent --"
+        mkdir -p "$HOME/.hermes"
+        local hermes_vision="${vision_map[$brain]:-false}"
+        if [[ -f "$HERMES_CONFIG" ]]; then
+            # Existing config.yaml: update through hermes' own CLI so everything else in it
+            # (profiles, gateway, skills, memory settings, ...) survives — same "existing
+            # settings preserved" convention as the Claude/OpenCode paths above. Backed up
+            # first, like every other config this script touches.
+            backup "$HERMES_CONFIG"
+            hermes config set model.default "$brain"
+            hermes config set model.provider custom
+            hermes config set model.base_url "$server_url"
+            # No api_key written — Hermes' own docs say to leave it empty for local/self-hosted
+            # endpoints, matching how the OpenCode path above is written keyless against the
+            # same server.
+            # Context window: model.context_length is Hermes' step-0 override in its context
+            # resolution (agent/model_metadata.py) — without it Hermes guesses from hardcoded
+            # per-family defaults (e.g. any "glm*" model name → the glm catalog value), which
+            # is wrong for most self-hosted serving configs, and every compaction threshold
+            # inherits the wrong window. Must be a plain integer (a "256K"-style string is
+            # warned about and ignored).
+            [[ "$(ctx_for_id "$brain")" =~ ^[0-9]+$ ]] && \
+                hermes config set model.context_length "$(ctx_for_id "$brain")"
+            # Vision: providers.custom.models.<id>.supports_vision is the override Hermes'
+            # image routing reads FIRST (agent/image_routing.py), before its models.dev catalog
+            # and Ollama probes — the explicit flag is what makes attached images go native
+            # (OpenAI image_url parts) instead of silently degrading to the lossy
+            # vision_analyze text path. Merged into any models already declared there.
+            local existing merged
+            existing="$(hermes config get providers.custom --json 2>/dev/null || true)"
+            if [[ -n "$existing" ]] && echo "$existing" | jq -e 'type == "object"' >/dev/null 2>&1; then
+                merged="$(jq --arg m "$brain" --argjson v "$hermes_vision" \
+                    '.models = ((.models // {}) + {($m): {supports_vision: $v}})' <<<"$existing")"
+            else
+                merged="$(jq -n --arg m "$brain" --argjson v "$hermes_vision" \
+                    '{models: {($m): {supports_vision: $v}}}')"
+            fi
+            hermes config set 'providers.custom' "$merged"
+            echo "  pointed model at $server_url (provider custom) — supports_vision=$hermes_vision for '$brain'"
+        else
+            # Fresh config: write a minimal one directly (same fields the `hermes model` →
+            # "Custom endpoint" wizard saves — config.yaml is Hermes' single source of truth).
+            # context_length is the step-0 override for the same reason as in the merge path
+            # above (see that comment); omitted when the server didn't report one.
+            cat > "$HERMES_CONFIG" <<EOF
+model:
+  default: $brain
+  provider: custom
+  base_url: $server_url
+EOF
+            [[ "$(ctx_for_id "$brain")" =~ ^[0-9]+$ ]] && \
+                echo "  context_length: $(ctx_for_id "$brain")" >> "$HERMES_CONFIG"
+            cat >> "$HERMES_CONFIG" <<EOF
+providers:
+  custom:
+    models:
+      $brain:
+        supports_vision: $hermes_vision
+EOF
+            echo "  wrote $HERMES_CONFIG — supports_vision=$hermes_vision for '$brain'"
+        fi
+        if [[ "$hermes_vision" == "false" ]]; then
+            ew "  '$brain' marked text-only — attached images will be described as text via vision_analyze, not sent natively"
+        fi
+        if [[ -n "$searxng_url" ]]; then
+            hermes config set 'mcp_servers.searxng' "$(jq -n --arg u "$searxng_url" \
+                '{command: "npx", args: ["-y", "mcp-searxng"], env: {SEARXNG_URL: $u, SEARXNG_MAX_RESULTS: "10", SEARXNG_LITE_TOOLS: "true"}}')"
+            echo "  added searxng MCP server ($searxng_url) to $HERMES_CONFIG"
         fi
     fi
 
@@ -722,6 +911,7 @@ EOF
     $want_claude   && echo "Claude Code: run ./start-claude-code-shim.sh once (keeps claude-shim running), then 'claude' as usual." || true
     $want_opencode && echo "OpenCode: run 'opencode' — model is already selected." || true
     $want_omp      && echo "OMP: run 'omp' — model is already selected." || true
+    $want_hermes   && echo "Hermes Agent: run 'hermes' (or 'hermes chat') — model is already selected. Its own first-run wizard may still show once; Enter through it." || true
     true
 }
 

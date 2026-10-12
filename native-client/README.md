@@ -1,7 +1,8 @@
-# Native client — Claude Code, OpenCode, OMP, no Docker
+# Native client — Claude Code, OpenCode, OMP, Hermes Agent, no Docker
 
-For someone who already runs Claude Code, OpenCode, and/or OMP locally and just wants to point
-them at a running [`../server/`](../server/) — no sandbox, no Docker, no browser terminal.
+For someone who already runs Claude Code, OpenCode, OMP, and/or Hermes Agent locally and just
+wants to point them at a running [`../server/`](../server/) — no sandbox, no Docker, no browser
+terminal.
 
 - **`setup.sh`** (bash + curl + jq) — overview-first, menu-driven, same shape as the sandbox's and
   server's own `model-config.sh`: run it any time, with no prerequisites, and it shows what's
@@ -11,8 +12,9 @@ them at a running [`../server/`](../server/) — no sandbox, no Docker, no brows
     `npx mcp-searxng`). Node is handled separately from `curl`/`jq`: it's never installed as a
     distro package, since those are routinely too old (see below) — instead it installs nvm
     (nodejs.org's own recommended installer) and the current Node LTS + npm through it.
-  - **install a tool** — checks each of Claude Code / OpenCode / OMP with `command -v` and offers
-    to install whichever is missing (same official installers the sandbox's Dockerfile uses).
+  - **install a tool** — checks each of Claude Code / OpenCode / OMP / Hermes Agent with
+    `command -v` and offers to install whichever is missing (same official installers the
+    sandbox's Dockerfile uses).
   - **configure a tool** — pick which tool(s) first (installing one on the spot if you don't have
     it yet), *then* a server address incl. `/v1` (defaults to whatever that tool is already
     pointed at, if anything), which it checks is actually reachable and asks the server what it
@@ -23,9 +25,9 @@ them at a running [`../server/`](../server/) — no sandbox, no Docker, no brows
     the tool(s) you picked. Backs up any existing config before touching it
     (`<file>.bak-<timestamp>`, next to the original — same convention as the sandbox wizard's
     `RESET catalog`).
-  - if you picked OpenCode and/or OMP, also asks for a searXNG address (defaults to the server's
-    own host on `:8080`, empty to skip) and wires it in as an MCP web-search tool — same
-    `mcp-searxng` server the sandbox configures for those two tools
+  - if you picked OpenCode, OMP, and/or Hermes Agent, also asks for a searXNG address (defaults to
+    the server's own host on `:8080`, empty to skip) and wires it in as an MCP web-search tool —
+    same `mcp-searxng` server the sandbox configures for those tools
     (`../sandbox-client/config/opencode/opencode.json`'s `.mcp` block,
     `../sandbox-client/config/omp/mcp.json`). Claude Code never gets this — it isn't wired up for
     it in the sandbox either.
@@ -36,9 +38,9 @@ them at a running [`../server/`](../server/) — no sandbox, no Docker, no brows
   this piece and the sandbox container are meant to stay independently runnable, not share files
   across the split.
 
-OpenCode and OMP don't need `claude-shim` at all — they already speak OpenAI natively, so
-`setup.sh` points them straight at the server's own address. Only Claude Code (Anthropic-only)
-goes through the shim.
+OpenCode, OMP, and Hermes Agent don't need `claude-shim` at all — they already speak OpenAI
+natively, so `setup.sh` points them straight at the server's own address. Only Claude Code
+(Anthropic-only) goes through the shim.
 
 ## Prerequisites
 
@@ -47,16 +49,16 @@ goes through the shim.
   `claude-shim.js` in this directory, since that's a plain `.js` file run via `node claude-shim.js`
   (see `start-claude-code-shim.sh`), not a compiled binary. Any reasonably recent Node version — the
   shim is pure stdlib, no npm install needed. Only relevant once you configure Claude Code.
-  - **searXNG web search (OpenCode/OMP) needs a much newer Node than that: >=22.** It runs via
-    `npx mcp-searxng`, whose `undici` dependency hard-requires Node 22 (a `File is not defined`
+-   **searXNG web search (OpenCode/OMP/Hermes) needs a much newer Node than that: >=22.** It runs
+    via `npx mcp-searxng`, whose `undici` dependency hard-requires Node 22 (a `File is not defined`
     crash on anything older, showing as "searxng failed / Disabled" in the tool itself). A plain
     distro `nodejs` package is frequently below this (e.g. Ubuntu 24.04 ships 18.19.1) even though
     it's fine for claude-shim.js — this is why `setup.sh` never installs node via `apt`/`brew`.
     `setup.sh` checks the version everywhere it matters (overview, install requirements, setting
     the searXNG address) and, when it's insufficient, offers to install nvm + the current Node LTS
     + npm through it right there.
-- Claude Code / OpenCode / OMP themselves are NOT prerequisites — `setup.sh` checks for each and
-  offers to install whichever you want
+- Claude Code / OpenCode / OMP / Hermes Agent themselves are NOT prerequisites — `setup.sh` checks
+  for each and offers to install whichever you want
 
 ## Setup
 
@@ -95,9 +97,47 @@ inside Claude Code still works the same way.
 fields the sandbox pre-seeds (`../sandbox-client/config/claude/claude.json`) — so a fresh Claude
 Code install skips straight to a working session instead of stopping at its own first-run wizard.
 
-**OpenCode** and **OMP** need nothing kept running — `setup.sh` writes their provider config
+**OpenCode**, **OMP**, and **Hermes Agent** need nothing kept running — `setup.sh` writes their
+provider config pointing directly at the server, and you're done:
 (`~/.config/opencode/opencode.json`'s `provider`/`model`, `~/.omp/agent/models.yml` +
-`config.yml`) pointing directly at the server, and you're done.
+`config.yml`, `~/.hermes/config.yaml`). For OpenCode each model entry also gets a
+`limit: {context, output}` from the server-reported windows — without it OpenCode defaults both
+to 0 (its models.dev catalog never lists a self-hosted model), so the context-usage display
+sticks at 0% and auto-compact has no window to work with. When the server doesn't report an
+output window, `limit.output` defaults to 16384 (same maxTokens the OMP path assumes), since
+OpenCode's `limit` schema requires both fields.
+
+**Hermes Agent**'s config (`~/.hermes/config.yaml`) gets three things:
+
+- the `model:` block — `provider: custom` + `base_url` + `default` model id, plus
+  `context_length` (the server-reported context window, when it reported one) — the same fields
+  Hermes' own `hermes model` → "Custom endpoint" wizard saves (config.yaml is Hermes' single
+  source of truth; no `.env` model entries are used). `context_length` matters: it's Hermes'
+  step-0 context override, and without it Hermes guesses from hardcoded per-family defaults
+  (e.g. any "glm*" model name → the glm catalog value), which is wrong for most self-hosted
+  serving configs — compaction thresholds inherit the wrong window as a result. Must be a plain
+  integer; a `"256K"`-style string is warned about and ignored by Hermes. If a config.yaml
+  already exists, it's backed up and updated through Hermes' own `hermes config set` CLI, so
+  everything else in it (profiles, gateway, skills, memory settings, ...) is preserved; only the
+  `model.*` scalars are rewritten.
+- `providers.custom.models.<brain>.supports_vision` — **this one matters**: it's the vision flag
+  from the "Can '$brain' see images (vision)?" question, written explicitly as true *or* false.
+  Without it, Hermes tries to discover vision capability on its own — via the models.dev catalog
+  (a self-hosted vLLM/LiteLLM model will never be listed there) and an Ollama-specific endpoint
+  probe (not applicable either) — and with the capability unknown it silently routes every
+  attached image through its `vision_analyze` auxiliary model (a lossy text description) instead
+  of sending it natively as image parts. Same trap OpenCode's `attachment` flag fixes, same fix.
+- `mcp_servers.searxng` — the searXNG web-search MCP server (`npx mcp-searxng`), same env vars the
+  OpenCode/OMP configs carry. Written only when you gave a searXNG address.
+
+## Testing
+
+`tests/test-setup-helpers.sh` — unit + write-path tests for the Hermes Agent and OpenCode
+model-catalog handling in `setup.sh` (YAML status helpers, the vision/context-limit jq program,
+both Hermes write paths against a mock of `hermes config`). Everything it exercises is extracted
+from `setup.sh` at runtime, so it can't drift from the code it covers. Needs `bash`, `jq`,
+`python3` (with PyYAML for the YAML-shape assertions — skipped with a note without it). Run it
+with `bash tests/test-setup-helpers.sh`; no hermes install required.
 
 ## Why this exists, not just the Docker sandbox
 
@@ -115,6 +155,8 @@ your own), edit `~/.config/agentic-harness-native/models.json` by hand — add a
 commented-out example server in `../sandbox-client/config/models/models.example.yml` for the exact shape
 — same fields, that file is just YAML instead of this catalog's plain JSON). This only affects
 Claude Code (via `claude-shim`) — `setup.sh` only handles the single-server case for it; hand-editing
-the same catalog format works identically here and in the sandbox client. OpenCode and OMP each
-have their own native multi-provider config if you want to add a second server for them — edit
-their config files directly, same as you would without this project at all.
+the same catalog format works identically here and in the sandbox client. OpenCode, OMP, and
+Hermes Agent each have their own native multi-provider config if you want to add a second server
+for them (for Hermes: the `custom_providers` list or named entries under `providers.` in
+`~/.hermes/config.yaml`) — edit their config files directly, same as you would without this
+project at all.
