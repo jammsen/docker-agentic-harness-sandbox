@@ -515,6 +515,19 @@ function estimateTokens(body) {
   return Math.ceil(text.length / 4);
 }
 
+// An upstream refusal in Anthropic's error shape, with its status kept: Claude Code retries 429,
+// 5xx and overloaded_error itself, but only if it sees them — a 200 with an empty stream reads as
+// a finished, empty answer. The upstream's OpenAI-style message is carried over when there is one.
+const ERROR_TYPE = { 400: 'invalid_request_error', 401: 'authentication_error', 403: 'permission_error',
+  404: 'not_found_error', 413: 'request_too_large', 429: 'rate_limit_error', 503: 'overloaded_error', 529: 'overloaded_error' };
+function sendUpstreamError(upstreamRes, raw, res) {
+  const status = upstreamRes.statusCode || 502;
+  let message = raw.toString('utf8').slice(0, 2000) || `upstream answered HTTP ${status}`;
+  try { const j = JSON.parse(raw.toString('utf8')); const e = j.error || j; message = (typeof e === 'string' ? e : e.message) || message; } catch { /* not JSON: keep the raw text */ }
+  res.writeHead(status, { 'content-type': 'application/json' });
+  res.end(JSON.stringify({ type: 'error', error: { type: ERROR_TYPE[status] || 'api_error', message } }));
+}
+
 function dispatchTranslated(pathname, anthropicBody, target, res) {
   if (pathname !== '/v1/messages') {
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -540,21 +553,23 @@ function dispatchTranslated(pathname, anthropicBody, target, res) {
       headers: { host: target.host, 'content-type': 'application/json', 'content-length': outBody.length },
     },
     (upstreamRes) => {
-      if (openaiBody.stream) {
+      const ok = upstreamRes.statusCode === 200;
+      if (openaiBody.stream && ok) {
         streamOpenAIToAnthropic(upstreamRes, res, anthropicBody.model);
         return;
       }
       const chunks = [];
       upstreamRes.on('data', (c) => chunks.push(c));
       upstreamRes.on('end', () => {
+        if (!ok) { sendUpstreamError(upstreamRes, Buffer.concat(chunks), res); return; }
         let json;
         try { json = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch {
           res.writeHead(502, { 'content-type': 'application/json' });
           res.end(JSON.stringify({ error: { type: 'shim_translate_error', message: 'upstream did not return JSON' } }));
           return;
         }
-        res.writeHead(upstreamRes.statusCode === 200 ? 200 : (upstreamRes.statusCode || 502), { 'content-type': 'application/json' });
-        res.end(JSON.stringify(upstreamRes.statusCode === 200 ? openAIJsonToAnthropic(json, anthropicBody.model) : json));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(openAIJsonToAnthropic(json, anthropicBody.model)));
       });
     }
   );

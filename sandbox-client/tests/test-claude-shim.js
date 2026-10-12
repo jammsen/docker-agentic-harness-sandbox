@@ -218,6 +218,14 @@ function check(name, cond) {
     req.on('end', () => {
       plainReqBody = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       if (plainReqBody.tool_choice_probe_only) { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{}'); return; }
+      // Refusals: a user turn of "force-429" / "force-400" answers with that status and an
+      // OpenAI-style error body, as TensorFold/vLLM/litellm do (streamed requests included).
+      const force = /^force-(\d{3})$/.exec(plainReqBody.messages[plainReqBody.messages.length - 1].content || '');
+      if (force) {
+        res.writeHead(Number(force[1]), { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: `stub refused with ${force[1]}`, type: 'stub_error' } }));
+        return;
+      }
       if (plainReqBody.stream) {
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         const chunk = (delta, finish) => res.write(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: finish || null }] })}\n\n`);
@@ -250,6 +258,16 @@ function check(name, cond) {
       const req = http.request({ hostname: '127.0.0.1', port: SHIM_PORT, path: '/v1/messages', method: 'POST',
         headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } },
         (res) => { const chunks = []; res.on('data', (c) => chunks.push(c)); res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8'))); });
+      req.end(payload);
+    });
+  }
+  function postStatus(reqBody) {
+    return new Promise((resolve) => {
+      const payload = JSON.stringify(reqBody);
+      const req = http.request({ hostname: '127.0.0.1', port: SHIM_PORT, path: '/v1/messages', method: 'POST',
+        headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } },
+        (res) => { const chunks = []; res.on('data', (c) => chunks.push(c));
+          res.on('end', () => resolve({ status: res.statusCode, type: res.headers['content-type'], body: Buffer.concat(chunks).toString('utf8') })); });
       req.end(payload);
     });
   }
@@ -297,6 +315,23 @@ function check(name, cond) {
   check('stream: every opened block was closed', stops === starts.length);
   check('stream: finish_reason mapped to tool_use', msgDelta && msgDelta.data.delta.stop_reason === 'tool_use');
   check('stream: ends with message_stop', events[events.length - 1].event === 'message_stop');
+
+  // Upstream refusals keep their status and come back in Anthropic's error shape. A streamed
+  // request used to get a 200 with an empty event stream, which Claude Code reads as a finished,
+  // empty answer instead of retrying (TensorFold refuses streamed requests at saturation with 429).
+  const refusedStream = await postStatus({ model: 'opus', stream: true, messages: [{ role: 'user', content: 'force-429' }] });
+  let refusedStreamBody = null; try { refusedStreamBody = JSON.parse(refusedStream.body); } catch { /* checked below */ }
+  check('stream refusal: upstream 429 status passed through', refusedStream.status === 429);
+  check('stream refusal: JSON error, not an event stream', /application\/json/.test(refusedStream.type || '') && !/message_start/.test(refusedStream.body));
+  check('stream refusal: Anthropic error shape (rate_limit_error) with upstream message',
+    refusedStreamBody && refusedStreamBody.type === 'error' && refusedStreamBody.error.type === 'rate_limit_error'
+    && refusedStreamBody.error.message === 'stub refused with 429');
+  const refused = await postStatus({ model: 'opus', messages: [{ role: 'user', content: 'force-400' }] });
+  let refusedBody = null; try { refusedBody = JSON.parse(refused.body); } catch { /* checked below */ }
+  check('refusal: upstream 400 status passed through', refused.status === 400);
+  check('refusal: Anthropic error shape (invalid_request_error) with upstream message',
+    refusedBody && refusedBody.type === 'error' && refusedBody.error.type === 'invalid_request_error'
+    && refusedBody.error.message === 'stub refused with 400');
 
   // Image + tool round trip through the request translator (Anthropic -> OpenAI shape).
   await postCapture({

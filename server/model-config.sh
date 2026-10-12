@@ -172,7 +172,10 @@ store_model_entry() {
 add_model_with_effort_variants() {
     local s="$1" id="$2" ctx="$3" root="$4"
     echo ""
-    read -r -p "  Reasoning-effort levels for $id, comma-separated (e.g. low,medium,high; empty = single model, no effort tiers): " levels
+    echo "  Each level becomes its own model (${id}-<level>) with that reasoning_effort baked in."
+    echo "  Common values: none (thinking off), minimal, low, medium, high, xhigh, max — which ones a"
+    echo "  model accepts depends on its chat template (GLM-5.3-Flash: none, low, high, max)."
+    read -r -p "  Reasoning-effort levels for $id, comma-separated (e.g. none,low,high,max; empty = single model, no effort tiers): " levels
     if [[ -z "$levels" ]]; then
         store_model_entry "$s" "$id" "$ctx" "$root" "" ""
         es "  added $s/$id"
