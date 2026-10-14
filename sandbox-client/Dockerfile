@@ -190,8 +190,11 @@ RUN mkdir -p /home/agent/.config/opencode \
 USER agent
 WORKDIR /home/agent
 
-# opencode
-RUN curl -fsSL https://opencode.ai/install | bash
+# opencode — V2 (2.x), installed with the documented v2 installer script
+# (the plain https://opencode.ai/install script still ships V1 1.19.0 from
+# GitHub releases). Pinned for reproducible builds; --no-modify-path because
+# PATH already contains ~/.opencode/bin via the ENV above.
+RUN curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path --version 2.0.29
 
 # omp
 RUN curl -fsSL https://omp.sh/install | sh
