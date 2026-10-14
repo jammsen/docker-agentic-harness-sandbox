@@ -1,8 +1,9 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "plugins": ["/home/agent/.opencode-plugins/toks"],
   "provider": {},
   "model": "",
-  "autoshare": false,
+  "share": "disabled",
   "mcp": {
     "searxng": {
       "type": "local",
@@ -15,14 +16,13 @@
       "enabled": true
     }
   },
-  "agent": {
+  "agents": {
     "build": {
-      "prompt": "You are running inside a hardened Docker sandbox. You are a client to a dedicated vLLM server accessible only via its API endpoint — you have no direct access to the model weights. If you need information about yourself (capabilities, training cutoff, context size, etc.), look it up online based on your model ID. All projects are located under /home/agent/workspace. Work only there, with no exceptions, unless the user explicitly asks for access outside the sandbox. Follow the sandbox rules from /home/agent/.config/opencode/AGENTS.md. Before finishing any task that changes files, read WORKLOG.md in the active project directory if present and append a concise entry with the current Europe/Berlin timestamp from `TZ=Europe/Berlin date \"+%d.%m.%Y, %H:%M (%Z)\"`, changed files, concrete findings, and pending follow-ups.",
-      "permission": {
-        "webfetch": "ask",
-        "websearch": "allow"
-      },
-      "maxTokens": 16384
+      "system": "You are running inside a hardened Docker sandbox. You are a client to a dedicated vLLM server accessible only via its API endpoint — you have no direct access to the model weights. If you need information about yourself (capabilities, training cutoff, context size, etc.), look it up online based on your model ID. All projects are located under /home/agent/workspace. Work only there, with no exceptions, unless the user explicitly asks for access outside the sandbox. Follow the sandbox rules from /home/agent/.config/opencode/AGENTS.md. Before finishing any task that changes files, read WORKLOG.md in the active project directory if present and append a concise entry with the current Europe/Berlin timestamp from `TZ=Europe/Berlin date \"+%d.%m.%Y, %H:%M (%Z)\"`, changed files, concrete findings, and pending follow-ups.",
+      "permissions": [
+        { "action": "webfetch", "resource": "*", "effect": "ask" },
+        { "action": "websearch", "resource": "*", "effect": "allow" }
+      ]
     }
   }
 }

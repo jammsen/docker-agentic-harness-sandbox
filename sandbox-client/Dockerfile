@@ -190,8 +190,11 @@ RUN mkdir -p /home/agent/.config/opencode \
 USER agent
 WORKDIR /home/agent
 
-# opencode
-RUN curl -fsSL https://opencode.ai/install | bash
+# opencode — V2 (2.x), installed with the documented v2 installer script
+# (the plain https://opencode.ai/install script still ships V1 1.19.0 from
+# GitHub releases). Pinned for reproducible builds; --no-modify-path because
+# PATH already contains ~/.opencode/bin via the ENV above.
+RUN curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path --version 2.0.29
 
 # omp
 RUN curl -fsSL https://omp.sh/install | sh
@@ -231,5 +234,17 @@ COPY --chmod=755 scripts/agent-task.sh /usr/local/bin/agent-task
 COPY --chmod=755 scripts/model-config.sh /usr/local/bin/model-config
 COPY --chmod=755 scripts/render-models.sh /usr/local/bin/render-models
 COPY --chmod=755 scripts/analyze-image.js /usr/local/bin/analyze-image
+
+# tok/s meter — V2 opencode TUI plugin, source in config/opencode/plugin/toks.
+# Baked to /home/agent/.opencode-plugins (outside ~/.config/opencode) because
+# (a) the TUI part cannot resolve its solid-js/@opentui imports without an
+# installed node_modules and config mounts are read-only, and (b) a directory
+# under ~/.config/opencode would ALSO be picked up by opencode's global
+# plugin-dir scan, loading it twice on top of the explicit entry in the
+# opencode.json template. See config/opencode/plugin/toks/README.md.
+# Kept late in the file so plugin-only changes don't invalidate the expensive
+# tool-install layers above.
+COPY --chown=agent:agent config/opencode/plugin/toks /home/agent/.opencode-plugins/toks
+RUN cd /home/agent/.opencode-plugins/toks && npm ci --no-audit --no-fund
 
 ENTRYPOINT ["./entrypoint.sh"]
