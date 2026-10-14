@@ -148,7 +148,8 @@ sandbox-client/
 │   │   ├── auth.json       ← opencode provider auth tokens (mounted read-only) — edit before use
 │   │   ├── agents/         ← opencode subagent definitions
 │   │   ├── commands/       ← slash commands available inside opencode
-│   │   └── skills/         ← reusable skill definitions for opencode
+│   │   ├── skills/         ← reusable skill definitions for opencode
+│   │   └── plugin/toks/    ← tok/s meter TUI plugin SOURCE (baked into the image at build — see its README; NOT mounted)
 │   ├── omp/
 │   │   ├── AGENTS.md       ← sandbox rules for omp (mounted read-only)
 │   │   ├── config.yml      ← OMP model role TEMPLATE (roles/context filled from the catalog)
