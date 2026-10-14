@@ -49,7 +49,6 @@ brain="$(yq -r '.roles.brain // ""' "$CATALOG")"
 [[ -n "$brain" ]] || { ew "> render-models: no brain role in $CATALOG — tool configs not rendered (session menu stays blocked)"; exit 0; }
 bsrv="${brain%%/*}"; bid="${brain#*/}"
 bctx="$(S="$bsrv" M="$bid" yq -r '.servers[strenv(S)].models[strenv(M)].context // 0' "$CATALOG")"
-bmax="$(S="$bsrv" M="$bid" yq -r '.servers[strenv(S)].models[strenv(M)].max_tokens // 16384' "$CATALOG")"
 
 # 2) opencode.json — providers keyed by server name; model = "<server>/<id>" is opencode's own format.
 # Built with jq against $tmp/models.json (the JSON twin from step 1), not yq against the YAML
@@ -74,9 +73,12 @@ if [[ -f "$TPL/opencode.json" ]]; then
               else {} end))
           }) | from_entries)
       }}) | from_entries' "$tmp/models.json" > "$tmp/providers.json"
-    jq --slurpfile prov "$tmp/providers.json" --arg model "$brain" --argjson max "$bmax" \
+    # No agent-level maxTokens: the per-model "limit.output" written into
+    # providers above (from the catalog's max_tokens) caps completions in
+    # native V2; a legacy agent.maxTokens override has no V2 equivalent.
+    jq --slurpfile prov "$tmp/providers.json" --arg model "$brain" \
        --arg searxng "${SEARXNG_URL:?SEARXNG_URL not set}" \
-       '.provider = $prov[0] | .model = $model | .agent.build.maxTokens = $max
+       '.provider = $prov[0] | .model = $model
         | .mcp.searxng.environment.SEARXNG_URL = $searxng' \
        "$TPL/opencode.json" > "$tmp/opencode.json"
     _install "$tmp/opencode.json" "$APP_HOME/.config/opencode/opencode.json"
