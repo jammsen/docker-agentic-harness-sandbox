@@ -25,10 +25,22 @@ The fixed version therefore:
 
 - accumulates `tokens.output + tokens.reasoning` per turn from
   `session.step.ended` (a turn with tool calls spans several steps),
-- freezes on the final step (`finish !== "tool-calls"`) or on
+- freezes on a normal stop (`finish === "stop"`) without local tools, or on
   `session.execution.succeeded` / `.failed` / `.interrupted`,
-- counts reasoning deltas in the streaming estimate,
+- retains totals across `tool-calls` and `length` continuation steps,
+- tracks `assistantMessageID` so late or duplicate step endings cannot
+  contaminate a new turn, including one starting with a tool-only step,
+- counts text and reasoning deltas as fractional byte-based estimates,
+  rounding only for display so short fragments do not inflate the rate,
 - clears the live window on `session.step.started` (not only on tool calls).
+
+## Tests
+
+Run `npm ci && npm test` in this directory. The tests execute the real TUI
+event handlers with a mocked host and clock, covering stream fragmentation,
+consecutive turns, late and duplicate events, tool-only steps, length
+continuations, terminal execution outcomes, and the idle fallback. They also
+run during the sandbox image build; a failure stops the build.
 
 ## Sandbox wiring
 

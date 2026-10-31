@@ -5,6 +5,9 @@
   "author": {"name": "Jammsen + christestet"},
   "license":"MIT",
   "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.cjs"
+  },
   "exports": {
     ".": "./index.ts",
     "./tui": "./tui.tsx"
@@ -12,6 +15,9 @@
   "dependencies": {
     "@opencode/plugin": "^2.0.28",
     "solid-js": "^1.9.0"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
   },
   "peerDependencies": {
     "@opentui/core": ">=0.5.8",

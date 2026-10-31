@@ -245,6 +245,6 @@ COPY --chmod=755 scripts/analyze-image.js /usr/local/bin/analyze-image
 # Kept late in the file so plugin-only changes don't invalidate the expensive
 # tool-install layers above.
 COPY --chown=agent:agent config/opencode/plugin/toks /home/agent/.opencode-plugins/toks
-RUN cd /home/agent/.opencode-plugins/toks && npm ci --no-audit --no-fund
+RUN cd /home/agent/.opencode-plugins/toks && npm ci --no-audit --no-fund && npm test
 
 ENTRYPOINT ["./entrypoint.sh"]

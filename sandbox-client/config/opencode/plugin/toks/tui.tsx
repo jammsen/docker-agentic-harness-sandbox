@@ -15,8 +15,8 @@ import { Plugin } from "@opencode/plugin/tui"
 // session.tokens_output equals the sum of all assistant messages' outputs),
 // so treating it per-message inflated the average by the number of messages
 // in the session. Step tokens are accumulated per turn (a turn with tool
-// calls spans several steps) and the summary freezes on the final step
-// (finish reason != "tool-calls") or when the turn's execution ends.
+// calls spans several steps) and the summary freezes on a normal stop or
+// when the turn's execution ends. A length-limited step can continue.
 
 interface StreamSample {
   tokens: number
@@ -42,7 +42,9 @@ const FREEZE_FALLBACK_MS = 2500
 
 function estimateTokens(text: string): number {
   const byteLen = new TextEncoder().encode(text).length
-  return Math.max(1, Math.ceil(byteLen / BYTES_PER_TOKEN_ESTIMATE))
+  // Keep fractions: rounding each short delta makes the rate depend on how
+  // the provider splits the stream rather than how much output it sends.
+  return byteLen / BYTES_PER_TOKEN_ESTIMATE
 }
 
 function formatTps(value: number): string {
@@ -111,6 +113,9 @@ export default Plugin.define({
     // One turn can span several steps (tool calls); `session.step.ended`
     // reports per-step tokens, so they are summed here.
     const turnRealTokens = new Map<string, number>()
+    // Step identity distinguishes a new tool-only turn from late events for
+    // the previous turn, even when execution.started is coalesced away.
+    const currentStep = new Map<string, { id: string; ended: boolean; hasLocalTool?: boolean }>()
 
     const [version, setVersion] = createSignal(0)
     const [tick, setTick] = createSignal(0)
@@ -171,9 +176,11 @@ export default Plugin.define({
       setVersion((v) => v + 1)
     }
 
-    function handleStreamDelta(sessionID: string, deltaText: string) {
+    function handleStreamDelta(sessionID: string, assistantMessageID: string, deltaText: string) {
       if (context.data.session.status(sessionID) === "idle") return
       if (!deltaText) return
+      const step = currentStep.get(sessionID)
+      if (!step || step.id !== assistantMessageID || step.ended) return
 
       const tokens = estimateTokens(deltaText)
       const now = Date.now()
@@ -200,6 +207,8 @@ export default Plugin.define({
         messageStats.set(sessionID, stats)
       }
       stats.totalEstTokens += tokens
+      // A continuation can stream again after an earlier text.ended.
+      stats.endedTs = undefined
 
       setVersion((v) => v + 1)
     }
@@ -207,7 +216,7 @@ export default Plugin.define({
     const offDelta = context.data.on("session.text.delta", (event: any) => {
       const d = event?.data
       if (!d?.sessionID) return
-      if (typeof d.delta === "string") handleStreamDelta(d.sessionID, d.delta)
+      if (typeof d.delta === "string") handleStreamDelta(d.sessionID, d.assistantMessageID, d.delta)
     })
 
     // Reasoning streams are model output too — count them, so the live rate
@@ -215,20 +224,33 @@ export default Plugin.define({
     const offReasoning = context.data.on("session.reasoning.delta", (event: any) => {
       const d = event?.data
       if (!d?.sessionID) return
-      if (typeof d.delta === "string") handleStreamDelta(d.sessionID, d.delta)
+      if (typeof d.delta === "string") handleStreamDelta(d.sessionID, d.assistantMessageID, d.delta)
     })
 
     const offStepStarted = context.data.on("session.step.started", (event: any) => {
       const d = event?.data
+      if (!d?.sessionID || !d.assistantMessageID) return
+      const previousStep = currentStep.get(d.sessionID)
+      if (previousStep?.id === d.assistantMessageID) return
+      currentStep.set(d.sessionID, { id: d.assistantMessageID, ended: false })
+      if (messageStats.get(d.sessionID)?.frozen) {
+        // This is a new turn, including a first step with no visible deltas.
+        messageStats.delete(d.sessionID)
+        turnRealTokens.delete(d.sessionID)
+        setVersion((v) => v + 1)
+      }
       // A new step starts a fresh stream — the live window must not bridge
       // the gap between steps (covers transitions without tool calls).
-      if (d?.sessionID) clearLiveSamples(d.sessionID)
+      clearLiveSamples(d.sessionID)
     })
 
     const offStepEnded = context.data.on("session.step.ended", (event: any) => {
       const d = event?.data
       const sessionID = d?.sessionID
       if (!sessionID) return
+      const step = currentStep.get(sessionID)
+      if (!step || step.id !== d.assistantMessageID || step.ended) return
+      step.ended = true
 
       const output = d?.tokens?.output
       const reasoning = d?.tokens?.reasoning
@@ -236,24 +258,22 @@ export default Plugin.define({
         (typeof output === "number" && isFinite(output) ? output : 0) +
         (typeof reasoning === "number" && isFinite(reasoning) ? reasoning : 0)
       if (stepTokens > 0) {
-        // Skip when the turn's summary is already frozen (late-arriving step
-        // end) — the accumulator must not carry tokens into the next turn,
-        // which may start without a fresh session.execution.started.
         const stats = messageStats.get(sessionID)
         if (!stats || !stats.frozen) {
           turnRealTokens.set(sessionID, (turnRealTokens.get(sessionID) ?? 0) + stepTokens)
         }
       }
 
-      // The final step of a turn ends with a real finish reason; a
-      // "tool-calls" step is a mid-turn continuation, so keep accumulating.
-      if (d?.finish && d.finish !== "tool-calls") freeze(sessionID)
+      // A normal stop without a local tool confirms a final step. Local
+      // tools, "length", and "tool-calls" can all require continuation.
+      if (d.finish === "stop" && !step.hasLocalTool) freeze(sessionID)
     })
 
     const offTextEnded = context.data.on("session.text.ended", (event: any) => {
       const d = event?.data
       const sessionID = d?.sessionID
       if (!sessionID) return
+      if (currentStep.get(sessionID)?.id !== d.assistantMessageID) return
       const stats = messageStats.get(sessionID)
       if (stats && !stats.frozen) {
         stats.endedTs = Date.now()
@@ -262,7 +282,9 @@ export default Plugin.define({
         // no usage), freeze shortly after the stream goes quiet — but only
         // while the session is really idle, never mid-turn.
         setTimeout(() => {
-          if (context.data.session.status(sessionID) === "idle") freeze(sessionID)
+          if (messageStats.get(sessionID) === stats && context.data.session.status(sessionID) === "idle") {
+            freeze(sessionID)
+          }
         }, FREEZE_FALLBACK_MS)
       }
     })
@@ -271,7 +293,10 @@ export default Plugin.define({
     // freeze the summary at any terminal outcome (success, failure, abort).
     const offExecStarted = context.data.on("session.execution.started", (event: any) => {
       const sessionID = event?.data?.sessionID
-      if (sessionID) turnRealTokens.delete(sessionID)
+      if (sessionID) {
+        turnRealTokens.delete(sessionID)
+        currentStep.delete(sessionID)
+      }
     })
     const offExecDone = context.data.on("session.execution.succeeded", (event: any) => {
       if (event?.data?.sessionID) freeze(event.data.sessionID)
@@ -286,7 +311,11 @@ export default Plugin.define({
     // A tool call pauses the text stream — the window must not bridge it.
     const offTool = context.data.on("session.tool.called", (event: any) => {
       const d = event?.data
-      if (d?.sessionID) clearLiveSamples(d.sessionID)
+      if (!d?.sessionID) return
+      const step = currentStep.get(d.sessionID)
+      if (!step || step.id !== d.assistantMessageID || step.ended) return
+      if (d.executed !== true) step.hasLocalTool = true
+      clearLiveSamples(d.sessionID)
     })
 
     const interval = setInterval(() => {
@@ -350,6 +379,7 @@ export default Plugin.define({
       messageStats.clear()
       streamSamples.clear()
       turnRealTokens.clear()
+      currentStep.clear()
     }
   },
 })
