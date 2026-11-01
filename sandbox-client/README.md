@@ -39,7 +39,7 @@ A companion **image upload page** runs on `https://<host>:1112`. Paste a screens
 
 ## Prerequisites
 
-- Docker + Docker Compose installed on your machine
+- Docker with BuildKit + Docker Compose >=2.17 installed on your machine
 - A running server (see [`../server/`](../server/), yours or someone else's) exposing a LiteLLM
   endpoint and a searXNG endpoint reachable from this machine
 - `LITELLM_UPSTREAM` and `SEARXNG_URL` set to that server's addresses (see `.env.example`)
