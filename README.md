@@ -20,6 +20,12 @@ native-client/   — ./setup.sh (point it at the server, pick your models), then
 
 See each directory's own README for details, prerequisites, and troubleshooting.
 
+The sandbox and native client share their OpenCode release pin in [`versions/opencode`](versions/opencode).
+Update that file to change both installers. The sandbox build reads it through Compose's `versions`
+build context; native setup reads it directly. If you copy either client elsewhere, include the
+`versions/` directory beside it. Direct Docker builds use
+`docker build --build-context versions=../versions .` from `sandbox-client/`.
+
 ## Design notes
 
 Design investigations and drafts live in [`ideas/`](ideas/) — shared across all three pieces, since some (the reasoning-stream bug, the model catalog design) touch more than one side of the split.

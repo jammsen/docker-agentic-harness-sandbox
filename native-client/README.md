@@ -14,7 +14,10 @@ terminal.
     (nodejs.org's own recommended installer) and the current Node LTS + npm through it.
   - **install a tool** — checks each of Claude Code / OpenCode / OMP / Hermes Agent with
     `command -v` and offers to install whichever is missing (same official installers the
-    sandbox's Dockerfile uses).
+    sandbox's Dockerfile uses). OpenCode uses the V2 installer and reads the same version pin
+    as the sandbox from [`../versions/opencode`](../versions/opencode). If an installed version
+    differs, setup offers to install the pinned release. Legacy TPS registrations are checked
+    separately, including when the binary already matches the pin.
   - **configure a tool** — pick which tool(s) first (installing one on the spot if you don't have
     it yet), *then* a server address incl. `/v1` (defaults to whatever that tool is already
     pointed at, if anything), which it checks is actually reachable and asks the server what it
@@ -70,6 +73,28 @@ You'll see an overview of what's installed and configured (nothing, the first ti
 pick **i) install a tool** and/or **c) configure a tool** — run it again any time just to check
 current status, no prompts forced on you. Configuring backs up your old config each time rather
 than overwriting blind, so re-running to switch servers or add another tool is safe.
+
+**OpenCode V2 and the tok/s meter:** choose **i → 2** to install or upgrade OpenCode. Both
+installation and configuration detect the old `@mesaleh/opencode-tps` registration and offer
+to replace it, even if the binary is already V2. Choose **t** to add or repair the optional
+`opencode-toks` V2 meter at any time. Setup uses `opencode plugin add` with a full Git revision
+and subdirectory selector pointing to the corrected plugin merged in PR #32. OpenCode fetches
+the package and its dependencies itself; Git is required, but a local `sandbox-client/`
+directory and a separate npm install are not. The registration lives in `opencode.json`'s
+`plugins` array, rather than the V1 `tui.json` `plugin` array.
+
+Before replacing the plugin, setup backs up `opencode.json`, `tui.json`, and `cli.json` when
+present. It removes only the obsolete TPS entries after the V2 package installs successfully,
+preserving other plugins, model/provider settings, and terminal preferences. Restart OpenCode
+afterward. Existing supported V1 provider configuration remains readable by V2, so setup does
+not rewrite unrelated configuration; see the [OpenCode migration guide](https://opencode.ai/v2/docs/migrate-v1/).
+Other V1 plugins need their own V2-compatible replacements. If V1 was installed through a package
+manager, follow that guide's removal instructions before switching to the curl installer.
+When copying this client outside the repository, include `versions/opencode` beside
+`native-client/` so it can read the shared pin.
+OpenCode config paths respect `XDG_CONFIG_HOME`. Setup manages plain JSON; if an existing
+`opencode.jsonc` is present, it stops before installation or migration. Convert that file to
+`opencode.json` first, or manage the OpenCode installation and plugins directly through its CLI.
 
 **Claude Code** additionally needs the shim kept running:
 
@@ -131,6 +156,12 @@ OpenCode's `limit` schema requires both fields.
   OpenCode/OMP configs carry. Written only when you gave a searXNG address.
 
 ## Testing
+
+`tests/test-opencode-v2.sh` exercises the real installer helpers with mocked binaries and
+temporary config files: fresh installs, V1 upgrades, existing V2 binaries with legacy TPS
+registrations, repeat runs, plugin repair, and failure paths that preserve legacy config.
+Requires Bash >=4 and jq; run `bash tests/test-opencode-v2.sh`. No network or real tool install
+is needed.
 
 `tests/test-setup-helpers.sh` — unit + write-path tests for the Hermes Agent and OpenCode
 model-catalog handling in `setup.sh` (YAML status helpers, the vision/context-limit jq program,

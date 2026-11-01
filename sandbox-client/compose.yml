@@ -6,6 +6,8 @@ services:
   sandbox:
     build:
       context: .
+      additional_contexts:
+        versions: ../versions                 # shared OpenCode pin, also read by native-client
       args:
         PYTHON_VERSION: "3.13"                  # override here to change the Python version
         APT_MIRROR: ${APT_MIRROR:-}             # optional apt mirror for faster builds, see .env.example

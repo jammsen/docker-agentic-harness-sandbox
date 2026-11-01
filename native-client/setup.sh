@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck source-path=SCRIPTDIR
 # setup.sh — overview-driven manager for native (no Docker) Claude Code, OpenCode, OMP, and
 # Hermes Agent: check what's installed and configured, install a missing tool, or point one at a
 # running ../server/ instance. Same shape as the sandbox's model-config.sh and the server's own
@@ -21,8 +22,14 @@ CATALOG="$CONFIG_DIR/models.json"
 ENVFILE="$CONFIG_DIR/env"
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 CLAUDE_JSON="$HOME/.claude.json"
-OC_CONFIG="$HOME/.config/opencode/opencode.json"
-OC_TUI_CONFIG="$HOME/.config/opencode/tui.json"
+OC_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/opencode"
+OC_CONFIG="$OC_CONFIG_DIR/opencode.json"
+OC_TUI_CONFIG="$OC_CONFIG_DIR/tui.json"
+OC_CLI_CONFIG="$OC_CONFIG_DIR/cli.json"
+NATIVE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OPENCODE_VERSION="$(cat "$NATIVE_DIR/../versions/opencode")"
+# shellcheck source=includes/opencode.sh
+source "$NATIVE_DIR/includes/opencode.sh"
 OMP_MODELS="$HOME/.omp/agent/models.yml"
 OMP_CONFIG="$HOME/.omp/agent/config.yml"
 OMP_MCP="$HOME/.omp/agent/mcp.json"
@@ -76,7 +83,7 @@ node_version_str() { command -v node >/dev/null && echo "v$(node -v | tr -d v)" 
 backup() {
     local f="$1"
     [[ -f "$f" ]] || return 0
-    cp "$f" "$f.bak-$(date +%Y%m%d%H%M%S)"
+    cp "$f" "$f.bak-$(date +%Y%m%d%H%M%S)" || return 1
     echo "  backed up $f"
 }
 
@@ -110,8 +117,6 @@ opencode_summary() {
     ctx="$(jq -r --arg m "$model" '($m | split("/")) as $p | .provider[$p[0]].models[$p[1]].limit.context // ""' "$OC_CONFIG" 2>/dev/null)"
     echo "server $url, model=$model${ctx:+, ctx=$ctx}, vision=$vision, searxng=$searxng"
 }
-
-opencode_tps_installed() { [[ -f "$OC_TUI_CONFIG" ]] && jq -e '.plugin // [] | index("@mesaleh/opencode-tps")' "$OC_TUI_CONFIG" >/dev/null 2>&1; }
 
 omp_configured() { [[ -f "$OMP_MODELS" ]] && grep -q '^  upstream:' "$OMP_MODELS" 2>/dev/null; }
 omp_searxng_configured() { [[ -f "$OMP_MCP" ]] && jq -e '.mcpServers.searxng' "$OMP_MCP" >/dev/null 2>&1; }
@@ -203,6 +208,10 @@ overview() {
         esac
         local label; case "$name" in claude) label="Claude Code";; opencode) label="OpenCode";; omp) label="OMP";; hermes) label="Hermes Agent";; esac
         local istr="${RED}not installed${NC}"; [[ "$inst" == y ]] && istr="${GREEN}installed${NC}"
+        if [[ "$name" == "opencode" && "$inst" == y ]]; then
+            istr="$istr ($(opencode_version))"
+            opencode_at_pinned_version || istr="$istr — select i → 2 to install $OPENCODE_VERSION"
+        fi
         if [[ "$conf" == y ]]; then
             case "$name" in
                 claude)   summary="$(claude_summary)" ;;
@@ -222,16 +231,17 @@ overview() {
         if [[ "$name" == "opencode" ]]; then
             local tstr="${RED}not installed${NC}"
             opencode_tps_installed && tstr="${GREEN}installed${NC}"
-            printf "    ${DIM}└─ opencode-tps plugin (tok/s meter):${NC} %s\n" "$tstr"
+            opencode_legacy_tps_configured && tstr="${YELLOW}legacy TPS needs migration — select i → 2 or t${NC}"
+            printf "    ${DIM}└─ opencode-toks V2 plugin (tok/s meter):${NC} %s\n" "$tstr"
         fi
         if [[ "$name" == "opencode" ]] && opencode_searxng_configured && ! node_ok_for_searxng; then
-            printf "    ${DIM}└─${NC} ${YELLOW}searxng configured but will fail — node is $(node_version_str), mcp-searxng needs >=22${NC}\n"
+            printf '    %s└─%s %ssearxng configured but will fail — node is %s, mcp-searxng needs >=22%s\n' "$DIM" "$NC" "$YELLOW" "$(node_version_str)" "$NC"
         fi
         if [[ "$name" == "omp" ]] && omp_searxng_configured && ! node_ok_for_searxng; then
-            printf "    ${DIM}└─${NC} ${YELLOW}searxng configured but will fail — node is $(node_version_str), mcp-searxng needs >=22${NC}\n"
+            printf '    %s└─%s %ssearxng configured but will fail — node is %s, mcp-searxng needs >=22%s\n' "$DIM" "$NC" "$YELLOW" "$(node_version_str)" "$NC"
         fi
         if [[ "$name" == "hermes" ]] && hermes_searxng_configured && ! node_ok_for_searxng; then
-            printf "    ${DIM}└─${NC} ${YELLOW}searxng configured but will fail — node is $(node_version_str), mcp-searxng needs >=22${NC}\n"
+            printf '    %s└─%s %ssearxng configured but will fail — node is %s, mcp-searxng needs >=22%s\n' "$DIM" "$NC" "$YELLOW" "$(node_version_str)" "$NC"
         fi
     done
     echo ""
@@ -312,8 +322,8 @@ action_install_requirements() {
             ew "no apt-get or brew found — install manually: ${need[*]}"
         fi
     fi
-    command -v curl >/dev/null && es "curl OK" || ew "curl still missing"
-    command -v jq   >/dev/null && es "jq OK"   || ew "jq still missing"
+    if command -v curl >/dev/null; then es "curl OK"; else ew "curl still missing"; fi
+    if command -v jq >/dev/null; then es "jq OK"; else ew "jq still missing"; fi
     install_node_via_nvm || true
 }
 
@@ -323,19 +333,19 @@ action_install() {
     echo "  2) OpenCode"
     echo "  3) OMP"
     echo "  4) Hermes Agent"
-    echo "  5) All not-yet-installed"
+    echo "  5) All missing tools (also align OpenCode with the shared version pin)"
     read -r -p "Install which? (numbers like 1,3 or 'all', empty = cancel): " sel
     [[ -n "$sel" ]] || return 0
     case "${sel,,}" in
         all|5)
             installed claude   || install_tool claude   "Claude Code"   'curl -fsSL https://claude.ai/install.sh | bash' || true
-            installed opencode || install_tool opencode  "OpenCode"      'curl -fsSL https://opencode.ai/install | bash' || true
+            install_opencode || true
             installed omp      || install_tool omp       "OMP"           'curl -fsSL https://omp.sh/install | sh' || true
             installed hermes   || install_tool hermes    "Hermes Agent"  'curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash' || true
             ;;
         *)
             [[ "$sel" == *1* ]] && { install_tool claude   "Claude Code"   'curl -fsSL https://claude.ai/install.sh | bash' || true; }
-            [[ "$sel" == *2* ]] && { install_tool opencode "OpenCode"      'curl -fsSL https://opencode.ai/install | bash' || true; }
+            [[ "$sel" == *2* ]] && { install_opencode || true; }
             [[ "$sel" == *3* ]] && { install_tool omp      "OMP"           'curl -fsSL https://omp.sh/install | sh' || true; }
             [[ "$sel" == *4* ]] && { install_tool hermes   "Hermes Agent"  'curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash' || true; }
             ;;
@@ -343,34 +353,6 @@ action_install() {
     if [[ "$sel" == *1* || "${sel,,}" == "all" || "$sel" == "5" ]] && ! command -v node >/dev/null; then
         ew "note: Claude Code itself doesn't need node, but this project's claude-shim.js does"
         ew "(it's a plain .js file, not a compiled binary) — install Node.js separately (nodejs.org)"
-    fi
-}
-
-# ---------------------------------------------------------------- opencode-tps plugin
-# @mesaleh/opencode-tps — live tok/s meter for the OpenCode TUI (npmjs.com/package/@mesaleh/
-# opencode-tps). Not installed via npm directly: opencode's own `plugin` subcommand fetches it and
-# records it in tui.json's "plugin" array (global install -> $OC_TUI_CONFIG), same as any other
-# opencode plugin — so "installed" here means "listed in that file", not "on npm's global path".
-action_install_opencode_tps() {
-    echo ""
-    echo "opencode-tps — live tok/s meter for the OpenCode TUI, with a persistent avg/max/min"
-    echo "summary after each response (https://www.npmjs.com/package/@mesaleh/opencode-tps)."
-    if opencode_tps_installed; then
-        es "already installed — listed in $OC_TUI_CONFIG"
-        return 0
-    fi
-    if ! installed opencode; then
-        ew "OpenCode isn't installed."
-        install_tool opencode "OpenCode" 'curl -fsSL https://opencode.ai/install | bash' || return 1
-    fi
-    read -r -p "Install @mesaleh/opencode-tps globally ('opencode plugin @mesaleh/opencode-tps -g')? [y/N]: " ans
-    [[ "${ans,,}" == "y" ]] || return 1
-    backup "$OC_TUI_CONFIG"
-    opencode plugin @mesaleh/opencode-tps -g
-    if opencode_tps_installed; then
-        es "opencode-tps installed"
-    else
-        ew "command ran, but $OC_TUI_CONFIG doesn't list the plugin yet — check the command's own output above"
     fi
 }
 
@@ -434,9 +416,8 @@ action_configure() {
         ew "Claude Code isn't installed."
         install_tool claude "Claude Code" 'curl -fsSL https://claude.ai/install.sh | bash' || want_claude=false
     fi
-    if $want_opencode && ! installed opencode; then
-        ew "OpenCode isn't installed."
-        install_tool opencode "OpenCode" 'curl -fsSL https://opencode.ai/install | bash' || want_opencode=false
+    if $want_opencode; then
+        install_opencode || want_opencode=false
     fi
     if $want_omp && ! installed omp; then
         ew "OMP isn't installed."
@@ -582,7 +563,11 @@ action_configure() {
             else
                 IFS=', ' read -ra parts <<< "$sel"
                 for p in "${parts[@]}"; do
-                    [[ "$p" =~ ^[0-9]+$ ]] && [[ "$p" -ge 1 && "$p" -le ${#ids[@]} ]] && opencode_models+=("${ids[$((p-1))]}") || ew "ignoring '$p'"
+                    if [[ "$p" =~ ^[0-9]+$ && "$p" -ge 1 && "$p" -le ${#ids[@]} ]]; then
+                        opencode_models+=("${ids[$((p-1))]}")
+                    else
+                        ew "ignoring '$p'"
+                    fi
                 done
             fi
         fi
@@ -726,9 +711,9 @@ EOF
 
     if $want_opencode; then
         echo; echo "-- OpenCode --"
-        mkdir -p "$HOME/.config/opencode"
+        mkdir -p "$OC_CONFIG_DIR"
         backup "$OC_CONFIG"
-        [[ -f "$OC_CONFIG" ]] || echo '{"$schema": "https://opencode.ai/config.json"}' > "$OC_CONFIG"
+        [[ -f "$OC_CONFIG" ]] || jq -n '{"$schema": "https://opencode.ai/config.json"}' > "$OC_CONFIG"
         local tmp; tmp="$(mktemp)"
         # Group selected models by their catalog server label (srv_for_id) so OpenCode shows the
         # SAME grouping as the server's own model-config.sh (spark01/4gpusrv/...) instead of one
@@ -908,26 +893,30 @@ EOF
 
     echo
     es "Done."
-    $want_claude   && echo "Claude Code: run ./start-claude-code-shim.sh once (keeps claude-shim running), then 'claude' as usual." || true
-    $want_opencode && echo "OpenCode: run 'opencode' — model is already selected." || true
-    $want_omp      && echo "OMP: run 'omp' — model is already selected." || true
-    $want_hermes   && echo "Hermes Agent: run 'hermes' (or 'hermes chat') — model is already selected. Its own first-run wizard may still show once; Enter through it." || true
+    if $want_claude; then echo "Claude Code: run ./start-claude-code-shim.sh once (keeps claude-shim running), then 'claude' as usual."; fi
+    if $want_opencode; then echo "OpenCode: run 'opencode' — model is already selected."; fi
+    if $want_omp; then echo "OMP: run 'omp' — model is already selected."; fi
+    if $want_hermes; then echo "Hermes Agent: run 'hermes' (or 'hermes chat') — model is already selected. Its own first-run wizard may still show once; Enter through it."; fi
     true
 }
 
 # ---------------------------------------------------------------- main menu
-while true; do
-    overview
-    echo "  r) install requirements   i) install a tool         c) configure a tool (point at a server, install searxng mcp)"
-    echo "  t) install opencode plugin (tok/s meter)"
-    echo "  q) quit"
-    read -r -p "Choice: " choice
-    case "$choice" in
-        r) action_install_requirements ;;
-        i) action_install ;;
-        c) action_configure ;;
-        t) action_install_opencode_tps ;;
-        q) break ;;
-        *) ew "unknown choice" ;;
-    esac
-done
+main() {
+    while true; do
+        overview
+        echo "  r) install requirements   i) install a tool         c) configure a tool (point at a server, install searxng mcp)"
+        echo "  t) install/repair opencode V2 plugin (tok/s meter)"
+        echo "  q) quit"
+        read -r -p "Choice: " choice
+        case "$choice" in
+            r) action_install_requirements ;;
+            i) action_install ;;
+            c) action_configure ;;
+            t) install_opencode tps || true ;;
+            q) break ;;
+            *) ew "unknown choice" ;;
+        esac
+    done
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main; fi
